@@ -1,5 +1,5 @@
 [project]
-name = "bark-sqk"
+name = "Barq-SDK"
 version = "0.1.0"
 description = "A small, embeddable SDK for building tool-using AI agents in Python"
 requires-python = ">=3.12"
