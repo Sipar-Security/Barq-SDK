@@ -1,6 +1,6 @@
 # Architecture
 
-`Bark-SQK` (packaged as `bark-sqk` / `bark_sqk`, with backward-compatible `engine` support) is a small library for building tool-using AI agents. It is organised as a set of
+`Barq-SDK` (packaged as `Barq-SDK` / `bark_sqk`, with backward-compatible `engine` support) is a small library for building tool-using AI agents. It is organised as a set of
 decoupled packages around one agent loop; a caller injects a model and tools and drives
 either the high-level `Agent` or the lower-level `Coordinator`.
 
