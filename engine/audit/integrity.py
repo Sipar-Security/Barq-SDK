@@ -41,7 +41,7 @@ from typing import Any, Optional
 
 # Bump only on a breaking change to the canonicalisation or hash-material format.
 CHAIN_VERSION = 1
-_GENESIS_PREFIX = f"bark-sqk-audit-v{CHAIN_VERSION}:"
+_GENESIS_PREFIX = f"Barq-SDK-audit-v{CHAIN_VERSION}:"
 _LEGACY_GENESIS_PREFIX = f"bbengine-audit-v{CHAIN_VERSION}:"
 
 
