@@ -8,8 +8,8 @@ timestamped, with a stable id. Two jobs:
 
 JSONL, fsync'd per line, never rewritten. On top of "durable", every entry is now
 **chained**: it carries the hash of the entry before it, so any insertion, deletion,
-reordering, or in-place edit is detectable (`verify()`), and — with an HMAC key or an
-Ed25519 seal — unforgeable by whoever holds the file. See integrity.py for the layers.
+reordering, or in-place edit is detectable (`verify()`), and (with an HMAC key or an
+Ed25519 seal) unforgeable by whoever holds the file. See integrity.py for the layers.
 
 The public API (`log_exchange`/`log_decision`/`log_blocked`/`note`/`read_all`/`has`/
 `close`) is unchanged, so this is a drop-in for every existing caller; the integrity
@@ -36,8 +36,8 @@ SEAL_KIND = "audit-seal"
 # --- cross-process append lock ------------------------------------------------
 # The hash chain has ONE head. A threading.Lock only serialises writers inside a single
 # AuditLog object; two Agents, a worker pool, or two processes on the same file each cache
-# their own head, interleave, and fork the chain permanently — verify() then fails forever
-# with no error at write time. An OS file lock plus a head re-read under that lock makes
+# their own head, interleave, and fork the chain permanently (verify() then fails forever
+# with no error at write time). An OS file lock plus a head re-read under that lock makes
 # concurrent appenders safe.
 try:  # POSIX
     import fcntl
@@ -127,8 +127,8 @@ class AuditLog:
     ) -> None:
         """`hmac_key` (layer 2) makes the chain unforgeable without the key; keep it in a
         secret store, not the workdir. `signing_key` (layer 3, Ed25519) is used by
-        `seal()` for third-party-verifiable checkpoints. Both are optional — with neither,
-        the plain SHA-256 chain still detects tampering."""
+        `seal()` for third-party-verifiable checkpoints. Both are optional (with neither,
+        the plain SHA-256 chain still detects tampering)."""
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         # Applied to every record BEFORE hashing, so the chain covers the redacted bytes and
@@ -204,7 +204,7 @@ class AuditLog:
                 )
             return I.ChainState(chain_id=cid, head=last.hash, count=len(entries), keyed=keyed)
 
-        # Legacy (no chain header): don't rewrite history — start a new chain after it.
+        # Legacy (no chain header): don't rewrite history - start a new chain after it.
         cid = chain_id or uuid.uuid4().hex
         return I.ChainState(
             chain_id=cid, head=I.genesis_hash(cid), count=0,
@@ -218,7 +218,7 @@ class AuditLog:
         Serialised twice over: a thread lock for writers inside this process, and an OS file
         lock for writers outside it. Under the file lock the head is re-read from disk, so an
         entry appended by another AuditLog object (another Agent, another process) is chained
-        onto rather than overwritten — which is what used to fork the chain irrecoverably.
+        onto rather than overwritten (which is what used to fork the chain irrecoverably).
         """
         if self._redactor is not None:
             data = self._redactor(data)
@@ -271,7 +271,7 @@ class AuditLog:
         return self._append("decision", {"tool": tool, "behavior": behavior, "reason": reason})
 
     def log_blocked(self, tool: str, target: str, reason: str) -> str:
-        """A policy block — feeds alerting/metrics on denied tool calls."""
+        """A policy block: feeds alerting/metrics on denied tool calls."""
         return self._append("blocked", {"tool": tool, "target": target, "reason": reason})
 
     def note(self, text: str) -> str:
@@ -280,10 +280,15 @@ class AuditLog:
     # ---- sealing (layer 3) -------------------------------------------------
     def seal(self, signing_key: str | bytes | None = None) -> str:
         """Write a checkpoint over the current head+count. If an Ed25519 signing key is
-        available (arg, constructor, or $BBENGINE_AUDIT_SIGNING_KEY) the checkpoint is
-        signed so a third party can verify chain-of-custody against the operator's public
+        available (arg, constructor, or $BARK_SQK_AUDIT_SIGNING_KEY / $BBENGINE_AUDIT_SIGNING_KEY)
+        the checkpoint is signed so a third party can verify chain-of-custody against the operator's public
         key. Without a key it is still a chained, timestamped checkpoint. Returns its id."""
-        raw = signing_key or self._signing_raw or os.environ.get("BBENGINE_AUDIT_SIGNING_KEY")
+        raw = (
+            signing_key
+            or self._signing_raw
+            or os.environ.get("BARK_SQK_AUDIT_SIGNING_KEY")
+            or os.environ.get("BBENGINE_AUDIT_SIGNING_KEY")
+        )
         head, count = self._head, self._count
         data: dict = {"head": head, "count": count}
         priv = I.load_private_key(raw) if raw else None
@@ -316,7 +321,7 @@ class AuditLog:
         self, evidence_id: str, *, request: dict | None = None, response: dict | None = None
     ) -> bool:
         """Confirm that the given request/response bytes are byte-identical to what the
-        audit entry recorded — structural evidence binding, not a URL match. Passing only
+        audit entry recorded (structural evidence binding, not a URL match). Passing only
         one of request/response verifies just that side."""
         dig = self.evidence_digest(evidence_id)
         if dig is None:
@@ -432,18 +437,17 @@ def verify_audit_file(
             ok=False, chain_id=chain_id, keyed=True,
             reason="chain is HMAC-keyed; supply hmac_key to verify it",
         )
-    if not keyed:
-        key = None  # an unkeyed chain must be verified with plain SHA-256
-
     expected_prev = I.genesis_hash(chain_id)
     count = 0
     seals = 0
     seals_verified = 0
-    for _, d in parsed[header_pos:]:
+    for idx_entry, (_, d) in enumerate(parsed[header_pos:]):
         entry = AuditEntry(
             id=d.get("id", ""), ts=d.get("ts", 0.0), kind=d.get("kind", ""),
             data=d.get("data", {}), prev=d.get("prev", ""), hash=d.get("hash", ""),
         )
+        if idx_entry == 0 and entry.prev != expected_prev and entry.prev == I.genesis_hash(chain_id, legacy=True):
+            expected_prev = entry.prev
         if entry.prev != expected_prev:
             return I.VerifyReport(
                 ok=False, count=count, chain_id=chain_id, broken_at=count, keyed=keyed,

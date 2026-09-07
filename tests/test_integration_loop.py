@@ -1,6 +1,6 @@
 """End-to-end: an OpenAI-compatible model (driven via httpx MockTransport) runs the full
 coordinator loop, and the permission / network-policy / audit layers gate its tool calls.
-No real network — proves the whole stack works over the OpenAI-compatible wire format.
+No real network; proves the whole stack works over the OpenAI-compatible wire format.
 """
 
 import asyncio

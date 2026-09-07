@@ -1,9 +1,9 @@
-"""Model providers — OpenAI-compatible endpoints (DeepSeek / Moonshot / Zhipu / any
+"""Model providers: OpenAI-compatible endpoints (DeepSeek / Moonshot / Zhipu / any
 aggregator like ZenMux or OpenRouter).
 
 Every provider here exposes an OpenAI-style /chat/completions endpoint with function/tool
 calling, so one adapter (openai_compat.py) serves them all; only base_url, api-key env
-var, and model ids differ. (There is no vendor SDK dependency on purpose — this avoids
+var, and model ids differ. (There is no vendor SDK dependency on purpose: this avoids
 SDK-vs-provider drift.)
 
 Base URLs below are sensible defaults but change over time; confirm against each
@@ -28,7 +28,7 @@ class ProviderConfig:
     api_key_env: str
 
 
-# Defaults — confirm against provider docs. Overridable via ModelSpec.base_url.
+# Defaults: confirm against provider docs. Overridable via ModelSpec.base_url.
 PROVIDERS: dict[str, ProviderConfig] = {
     "deepseek": ProviderConfig("deepseek", "https://api.deepseek.com", "DEEPSEEK_API_KEY"),
     # Moonshot / Kimi: use .cn for mainland China, .ai for international.
@@ -54,7 +54,7 @@ class ModelSpec:
     temperature: float = 0.0
     # Per-completion cap. None = provider default (unbounded). A finite cap bounds any
     # single response so a degenerate "repeat until the token limit" turn can't balloon
-    # the context — belt-and-suspenders with the loop guard.
+    # the context: belt-and-suspenders with the loop guard.
     max_tokens: int | None = None
 
     def resolved_base_url(self) -> str:

@@ -1,4 +1,4 @@
-"""PermissionEngine — the tool-permission decision flow.
+"""PermissionEngine: the tool-permission decision flow.
 
 Order:
   1. PreToolUse hook gate      (fast, local, can hard-deny/allow)
@@ -94,7 +94,7 @@ def _hosts_from_command(cmd: str) -> list[str]:
 def network_targets(call: ToolCall) -> list[str]:
     """Every host/URL this call would contact. Empty for non-network calls.
 
-    Only recognised destination fields and shell network-binary args count — a URL that
+    Only recognised destination fields and shell network-binary args count: a URL that
     merely appears inside a request body is a payload sent TO a target, not a host the
     engine itself dials, so it is not treated as a destination.
     """
@@ -115,7 +115,7 @@ def network_targets(call: ToolCall) -> list[str]:
 
 def _target_is_reserved_ip(target: str) -> bool:
     """True only if `target`'s host is a RAW reserved/internal IP literal. A hostname is
-    not reserved here — so `network_ask` can let a human approve a public host, while a
+    not reserved here: so `network_ask` can let a human approve a public host, while a
     raw internal address (SSRF/metadata) stays hard-denied."""
     host = extract_host(target)
     try:
@@ -182,7 +182,7 @@ class PermissionEngine:
             danger_check = builtin_danger
         self._danger_check = danger_check
         # When True, a host rejected by the network policy becomes ASK (a human can
-        # approve reaching it once) instead of a hard DENY — except a raw reserved/internal
+        # approve reaching it once) instead of a hard DENY, except a raw reserved/internal
         # IP literal, which always hard-DENYs.
         self.network_ask = network_ask
 
@@ -278,7 +278,7 @@ class PermissionEngine:
         return self._finalize(call, self._mode_default())
 
     async def check_async(self, call: ToolCall) -> Decision:
-        """Async decision path — lets a live LLM classifier run. The fast deterministic
+        """Async decision path: lets a live LLM classifier run. The fast deterministic
         checks resolve most calls; the classifier only runs when they fall through."""
         content = match_content(call)
         try:

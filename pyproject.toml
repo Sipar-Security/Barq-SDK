@@ -1,10 +1,10 @@
 [project]
-name = "engine"
+name = "bark-sqk"
 version = "0.1.0"
 description = "A small, embeddable SDK for building tool-using AI agents in Python"
 requires-python = ">=3.12"
 dependencies = [
-    # MCP client (stdio tool servers). Optional at runtime — only imported when you
+    # MCP client (stdio tool servers). Optional at runtime: only imported when you
     # actually connect an MCP server.
     "mcp>=1.23",
     # OpenAI-compatible model calls go over httpx; no vendor SDK on purpose.
@@ -21,4 +21,4 @@ testpaths = ["tests"]
 addopts = "-q"
 
 [tool.setuptools.packages.find]
-include = ["engine*"]
+include = ["bark_sqk*", "engine*"]

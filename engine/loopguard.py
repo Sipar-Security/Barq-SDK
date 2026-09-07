@@ -2,11 +2,11 @@
 
 A small model can fail in two ways the turn-budget cannot catch:
 
-  1. *Intra-response degeneration* — a single completion repeats one line until it hits the
+  1. *Intra-response degeneration*: a single completion repeats one line until it hits the
      token cap (the classic "Let me also check X … Let me also check X …" wall). Because the
      turn ends normally, the max_turns counter never fires; the run just burns its whole
      budget in one giant useless turn.
-  2. *Cross-turn stall* — the model emits the same reasoning + the same tool call, turn after
+  2. *Cross-turn stall*: the model emits the same reasoning + the same tool call, turn after
      turn, making no progress.
 
 `LoopGuard` is a pure, deterministic detector for both. The Coordinator feeds it every
@@ -86,7 +86,7 @@ class LoopGuard:
         sig = self._signature(text, tool_calls)
         self._sig_history.append(sig)
         recent = self._sig_history[-self.stall_threshold:]
-        # A stall needs real content — an empty (no text, no tools) signature never trips.
+        # A stall needs real content: an empty (no text, no tools) signature never trips.
         if (len(recent) >= self.stall_threshold and len(set(recent)) == 1
                 and (sig[0] or sig[1])):
             return self._trip("stalled_repeat",
@@ -115,7 +115,7 @@ class LoopGuard:
     @staticmethod
     def nudge() -> str:
         return (
-            "STOP — you are repeating yourself and making no progress. Do not repeat your "
+            "STOP: you are repeating yourself and making no progress. Do not repeat your "
             "previous message. Take exactly ONE of these actions now: (a) call a tool with "
             "NEW, different arguments that concretely advances the task, or (b) if the task is "
             "complete, give your final answer / call your finish tool. Any further repetition "

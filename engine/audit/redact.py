@@ -1,14 +1,14 @@
 """Secret redaction for audit records.
 
 The audit log stores the exact request/response of every exchange so a later claim can bind
-to precise evidence. That is the point of it — and it is also why an unredacted log is a
+to precise evidence. That is the point of it; it is also why an unredacted log is a
 liability: the agent's own `Authorization: Bearer …` header, provider API keys, and whatever
 the response body happened to contain (card numbers, national IDs) all get written verbatim,
 fsync'd, hash-chained so they cannot be quietly removed, into a file that lives inside the
 workdir the agent itself can write to.
 
 Redaction runs BEFORE hashing, so the chain covers the redacted bytes and evidence
-verification still works — you verify what was actually stored.
+verification still works: you verify what was actually stored.
 
 The default policy masks by header name (an allowlist of well-known credential headers plus
 anything whose name contains "key"/"token"/"secret"/"auth"), and by value shape for the

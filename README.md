@@ -1,8 +1,8 @@
-# engine — a small SDK for building tool-using AI agents
+# Bark-SQK: a small SDK for building tool-using AI agents
 
 A compact, embeddable Python library for building agents that call tools, use MCP servers,
-remember facts across runs, and stay inside a permission policy — with a tamper-evident
-audit trail and crash-resume built in. It is a **library, not an application**: you bring a
+remember facts across runs, and stay inside a permission policy (with a tamper-evident
+audit trail and crash-resume built in). It is a **library, not an application**: you bring a
 model and some tools; the engine gives you the loop and the guardrails.
 
 Model access is over any **OpenAI-compatible** `/chat/completions` endpoint (DeepSeek,
@@ -11,15 +11,15 @@ Moonshot/Kimi, Zhipu/GLM, or an aggregator like ZenMux/OpenRouter). No vendor SD
 ```bash
 pip install -e .          # runtime deps: httpx, mcp
 cp .env.example .env      # add a provider key for live runs
-python scripts/example_agent.py   # offline demo — no key needed
+python scripts/example_agent.py   # offline demo (no key needed)
 ```
 
 ## Quick start
 
 ```python
 import asyncio
-from engine import Agent
-from engine.providers import OpenAICompatClient, ModelSpec
+from bark_sqk import Agent
+from bark_sqk.providers import OpenAICompatClient, ModelSpec
 
 model = OpenAICompatClient(ModelSpec(provider="deepseek", model="deepseek-chat"))
 
@@ -135,4 +135,4 @@ python -m pytest        # 210 tests, offline (no API key, no network)
 running SDK (redirect-based policy bypass, fail-open permission gate, unbounded tool calls,
 audit chain forking under concurrency, invalid recovery transcripts, and the rest).
 `tests/test_security_classifiers.py` covers the read-only classifier and the filesystem
-guard — the two modules that decide things without asking a human.
+guard - the two modules that decide things without asking a human.

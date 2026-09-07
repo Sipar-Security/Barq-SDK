@@ -3,7 +3,7 @@
     python -m engine.audit verify   <audit.jsonl> [--hmac-key-env VAR | --hmac-key HEX]
     python -m engine.audit export   <audit.jsonl> --format ecs|cef [-o OUT]
 
-`verify` exits non-zero if the chain is broken — wire it into CI or a pre-report gate.
+`verify` exits non-zero if the chain is broken (wire it into CI or a pre-report gate).
 It reads only the JSONL file, so a client can run it against a log you hand them without
 the engine, and (for a keyed chain) with the key you disclose out of band.
 """

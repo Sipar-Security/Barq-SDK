@@ -1,5 +1,5 @@
 """The engine as a SUBSTRATE: a consumer installs their own native tool and mounts
-several MCP servers, and the Agent makes all of them callable by the model — without
+several MCP servers, and the Agent makes all of them callable by the model, without
 editing engine code. If this breaks, the engine is just a fixed app.
 """
 
@@ -48,7 +48,7 @@ def test_consumer_tools_and_multiple_mcp_servers_are_callable(tmp_path):
         "input_schema": {"type": "object", "properties": {"x": {"type": "number"}}},
     }
 
-    # Two MCP servers exposing a tool with the SAME bare name — proves namespacing keeps
+    # Two MCP servers exposing a tool with the SAME bare name; proves namespacing keeps
     # multiple servers from colliding.
     svc_a = _FakeMCP("svcA", "ping")
     svc_b = _FakeMCP("svcB", "ping")

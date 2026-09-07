@@ -103,7 +103,7 @@ class ProviderResponseError(RuntimeError):
     """The endpoint returned a body we cannot read as a completion.
 
     Aggregators (OpenRouter, ZenMux, and gateways generally) routinely answer HTTP 200 with
-    an error object instead of `choices` — so status-code retry logic never sees it. Indexing
+    an error object instead of `choices` (so status-code retry logic never sees it). Indexing
     `data["choices"][0]` blindly turned that into a KeyError/IndexError escaping create() and
     killing the run. Raising a typed error lets the caller decide, and keeps the message.
     """
@@ -111,7 +111,7 @@ class ProviderResponseError(RuntimeError):
 
 def _content_to_text(content: Any) -> str:
     """Flatten a message `content` to text. Most providers send a string, but the multimodal
-    shape is a list of parts — assigning that list into a text block silently corrupted it."""
+    shape is a list of parts: assigning that list into a text block silently corrupted it."""
     if isinstance(content, str):
         return content
     if isinstance(content, list):
@@ -164,7 +164,7 @@ def parse_openai_response(data: dict) -> ModelResponse:
         # The coordinator's exactly-once journal is keyed by this id. Some providers return an
         # empty or repeated tool_call id; guarantee a non-empty, response-unique id so two distinct
         # tool calls never share a key (an empty tool_call_id is also ambiguous on the wire, which
-        # otherwise lets one call's cached result be served for another — e.g. ReadFile returning
+        # otherwise lets one call's cached result be served for another, e.g. ReadFile returning
         # the wrong file).
         tid = str(tc.get("id") or "").strip()
         if not tid:
@@ -228,8 +228,8 @@ class OpenAICompatClient:
         self._transport = transport
         # A real system message, sent as the first turn of every request. Concatenating the
         # preamble onto the first USER message instead (the old behaviour) means the prefix
-        # is not stable across a conversation, so prompt caching — the single largest cost
-        # lever on a long agent run — can never engage.
+        # is not stable across a conversation, so prompt caching (the single largest cost
+        # lever on a long agent run) can never engage.
         self.system_prompt = system_prompt
         # Cumulative usage across every call this client makes. Subagent metering reads
         # `usage_total`; before this the attribute did not exist, so it always read {}.
@@ -286,7 +286,7 @@ class OpenAICompatClient:
         """POST to the provider with retry on transient failures.
 
         Retries rate-limit (429) and transient server/gateway errors (5xx), and network
-        transport errors (connection resets, read/connect timeouts — e.g. httpx.ReadError),
+        transport errors (connection resets, read/connect timeouts, e.g. httpx.ReadError),
         with exponential backoff. A non-retryable 4xx (bad payload/auth) raises immediately;
         after the last attempt the final error is raised. This is what makes a long, tool-heavy
         long, tool-heavy run survive a blip from the model API instead of crashing mid-run.
@@ -303,7 +303,7 @@ class OpenAICompatClient:
                 parsed = parse_openai_response(resp.json())
                 self._track(parsed.usage)
                 return parsed
-            except httpx.TransportError as e:  # ReadError/ConnectError/timeouts — transient
+            except httpx.TransportError as e:  # ReadError/ConnectError/timeouts: transient
                 if attempt < _MAX_ATTEMPTS - 1:
                     await self._backoff(attempt)
                     continue

@@ -8,7 +8,7 @@ mode like any other call.
 `HostAllowlist` is a small, self-contained policy: a target is allowed when its host
 matches an allow pattern (exact host, label-anchored ``*.suffix`` wildcard, or IP/CIDR)
 and does not match a deny pattern. By default it also denies raw reserved/internal IP
-literals (loopback, RFC1918, link-local — including cloud metadata 169.254.169.254) as a
+literals (loopback, RFC1918, link-local, including cloud metadata 169.254.169.254) as a
 basic SSRF guard, unless the operator explicitly opted that address into the allow list.
 """
 
@@ -120,7 +120,7 @@ class HostAllowlist:
         explicit_ip_allow = any(
             _host_matches(host, pat) and _looks_like_ip_pattern(pat) for pat in self._allow
         )
-        # The reserved/internal guard applies only to a raw IP literal — a hostname is
+        # The reserved/internal guard applies only to a raw IP literal - a hostname is
         # resolved by the network layer, not treated as reserved here.
         if (self._deny_reserved_ips and _is_ip_literal(host)
                 and is_reserved_ip(host) and not explicit_ip_allow):

@@ -1,18 +1,18 @@
 """SIEM export for the audit log.
 
-An enterprise audit trail is not a private file — it forwards to the client's SIEM
+An enterprise audit trail is not a private file: it forwards to the client's SIEM
 (Splunk / Elastic / Datadog / QRadar) where it becomes tamper-evident by being outside
 the operator's reach, and searchable next to the client's own telemetry. Two lingua
 francas cover essentially every SIEM:
 
-  * ECS  — Elastic Common Schema, JSON. Splunk, Elastic, Datadog, OpenSearch ingest it.
-  * CEF  — ArcSight Common Event Format, key=value. ArcSight, QRadar, and most legacy
+  * ECS: Elastic Common Schema, JSON. Splunk, Elastic, Datadog, OpenSearch ingest it.
+  * CEF: ArcSight Common Event Format, key=value. ArcSight, QRadar, and most legacy
            SIEMs speak it.
 
 Each exported record carries the entry's chain hash (`event.hash`) so a SIEM-side
 correlation can prove the forwarded copy matches the on-disk chain. Structural
-bookkeeping entries (chain header/seal) are emitted too — a seal in the SIEM is exactly
-the chain-of-custody checkpoint a triage team wants.
+bookkeeping entries (chain header/seal) are emitted too (a seal in the SIEM is exactly
+the chain-of-custody checkpoint a triage team wants).
 """
 
 from __future__ import annotations
@@ -145,12 +145,12 @@ def _read_entries(path: str | Path) -> Iterator[AuditEntry]:
 
 
 def export_ecs(path: str | Path) -> Iterator[str]:
-    """Yield newline-delimited ECS JSON (one doc per line) — pipe to Filebeat/HEC."""
+    """Yield newline-delimited ECS JSON (one doc per line): pipe to Filebeat/HEC."""
     for e in _read_entries(path):
         yield json.dumps(to_ecs(e), ensure_ascii=False, separators=(",", ":"))
 
 
 def export_cef(path: str | Path) -> Iterator[str]:
-    """Yield CEF lines — pipe to a syslog forwarder."""
+    """Yield CEF lines: pipe to a syslog forwarder."""
     for e in _read_entries(path):
         yield to_cef(e)

@@ -212,7 +212,7 @@ def test_subagent_ask_denied_without_elicit(tmp_path):
         tool_specs=[{"name": "Repro", "description": "p", "input_schema": {"type": "object"}}],
     )
     asyncio.run(sub.run("confirm"))
-    assert ran == []                        # denied — the whole point of threading elicit
+    assert ran == []                        # denied - the whole point of threading elicit
 
 
 # --- C4: crash-resume keeps subagent tool side effects exactly-once ----------------------

@@ -1,4 +1,4 @@
-"""Agent — the high-level facade that assembles the runtime into one object.
+"""Agent: the high-level facade that assembles the runtime into one object.
 
 The engine's pieces (coordinator loop, permission engine, tools, MCP handler, memory,
 sessions, audit) are usable directly, but most callers want a single object they hand a
@@ -17,8 +17,8 @@ crash-resumable sessions. Everything is overridable; pass `tools=` for your own 
 tools and `mcp_servers=` for any number of MCP servers (their tool names are namespaced).
 
 Use it as an async context manager (or call `aclose()`) so the audit file handle, the
-pooled HTTP clients and the model client are released — a long-lived host that constructs
-Agents without closing them leaks a file descriptor and a connection pool each time.
+pooled HTTP clients and the model client are released (a long-lived host that constructs
+Agents without closing them leaks a file descriptor and a connection pool each time).
 """
 
 from __future__ import annotations
@@ -57,7 +57,7 @@ from engine.tools import (
 
 
 class _NullAudit:
-    """Stand-in when auditing is disabled — the coordinator only needs these three."""
+    """Stand-in when auditing is disabled: the coordinator only needs these three."""ee."""
 
     def log_decision(self, *a, **k): return ""
     def log_blocked(self, *a, **k): return ""

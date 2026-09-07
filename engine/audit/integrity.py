@@ -4,7 +4,7 @@ The audit log is a compliance artifact: it records what an autonomous agent did 
 someone's behalf. "Durable JSONL, fsync'd"
 proves the file survived a crash; it does NOT prove the file was not edited after the
 fact. Enterprise audit means chain-of-custody: any insertion, deletion, reordering, or
-in-place edit is *detectable*, and — with a key held out of band — *unforgeable*.
+in-place edit is *detectable*, and (with a key held out of band) *unforgeable*.
 
 Three layers, each strictly stronger, each optional so there is a zero-dependency floor:
 
@@ -23,7 +23,7 @@ Three layers, each strictly stronger, each optional so there is a zero-dependenc
 
   3. Signed seals (Ed25519, optional). `seal()` writes a signed checkpoint over the
      current head + count + chain_id. A third party (the client's triage team) verifies
-     it against the operator's known public key — chain-of-custody without sharing a
+     it against the operator's known public key: chain-of-custody without sharing a
      secret. Requires `cryptography`; absent it, seals still checkpoint (layers 1/2) but
      carry no asymmetric signature.
 
@@ -41,7 +41,8 @@ from typing import Any, Optional
 
 # Bump only on a breaking change to the canonicalisation or hash-material format.
 CHAIN_VERSION = 1
-_GENESIS_PREFIX = f"bbengine-audit-v{CHAIN_VERSION}:"
+_GENESIS_PREFIX = f"bark-sqk-audit-v{CHAIN_VERSION}:"
+_LEGACY_GENESIS_PREFIX = f"bbengine-audit-v{CHAIN_VERSION}:"
 
 
 def canonical(obj: Any) -> str:
@@ -59,15 +60,16 @@ def sha256_hex(data: str | bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def genesis_hash(chain_id: str) -> str:
+def genesis_hash(chain_id: str, legacy: bool = False) -> str:
     """The `prev` of the very first entry. Binds the whole chain to `chain_id` so no
     entry (or run of entries) can be lifted from another log and still verify."""
-    return sha256_hex(_GENESIS_PREFIX + chain_id)
+    prefix = _LEGACY_GENESIS_PREFIX if legacy else _GENESIS_PREFIX
+    return sha256_hex(prefix + chain_id)
 
 
 def entry_core(entry_id: str, ts: float, kind: str, data: dict) -> dict:
     """The subset of an entry that is covered by the hash. `prev`/`hash`/signature
-    fields are intentionally excluded — they are computed FROM this, not over it."""
+    fields are intentionally excluded: they are computed FROM this, not over it."""
     return {"id": entry_id, "ts": ts, "kind": kind, "data": data}
 
 

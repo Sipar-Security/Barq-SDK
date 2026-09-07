@@ -134,7 +134,7 @@ def test_tool_execution_is_exactly_once_across_crash(tmp_path):
                          session=SessionStore(tmp_path / "s.json"),
                          journal=ToolJournal(tmp_path / "j.jsonl"), resume=True, max_turns=5)
     asyncio.run(coord2.run("go"))
-    assert a_runs == [1]              # EXACTLY once — not replayed on resume
+    assert a_runs == [1]              # EXACTLY once - not replayed on resume
     assert coord2.completed is True
 
 

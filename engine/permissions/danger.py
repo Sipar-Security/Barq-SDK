@@ -3,12 +3,12 @@
 The LLM intent classifier is non-deterministic and prompt-injectable, yet it was the only
 thing standing between the agent and an obviously catastrophic *local* command. This layer
 catches the well-known destructive shapes with plain regex. It returns a Decision whose
-behavior distinguishes HARD danger (DENY — catastrophic, must never be allow-listable) from
-SOFT danger (ASK — dangerous-but-sometimes-legit). The PermissionEngine applies the hard
+behavior distinguishes HARD danger (DENY: catastrophic, must never be allow-listable) from
+SOFT danger (ASK: dangerous-but-sometimes-legit). The PermissionEngine applies the hard
 DENY *before* any allow rule and the soft ASK *after* rules (see PermissionEngine._deterministic).
 
 Scope: SHELL tools only (bash/shell/powershell). We deliberately do NOT scan HTTP payloads
-or other tool inputs — a `DROP TABLE`/`rm -rf` appearing inside data the agent SENDS somewhere is a payload,
+or other tool inputs - a `DROP TABLE`/`rm -rf` appearing inside data the agent SENDS somewhere is a payload,
 not a local action, and must not be blocked here.
 """
 
@@ -103,14 +103,14 @@ def _seg_catastrophic_rm(seg: str) -> bool:
     if not (recursive or force):
         return False
     # A subshell/backtick/eval target can't be statically resolved (`rm -rf (echo /etc)`,
-    # `rm -rf $(...)`, `rm -rf \`...\``) — fail CLOSED and treat it as catastrophic.
+    # `rm -rf $(...)`, `rm -rf \`...\``) - fail CLOSED and treat it as catastrophic.
     if re.search(r"[`(]|\$\{|%\w+%", rest):
         return True
     return any(_is_catastrophic_target(t) for t in targets)
 
 
 def _catastrophic_rm(cmd: str) -> bool:
-    """Recursive/forced rm of a catastrophic target — a host/data wipe. Checks EVERY command
+    """Recursive/forced rm of a catastrophic target - a host/data wipe. Checks EVERY command
     in a chained line, normalizes paths, covers Windows drives, and fails closed on dynamic
     (subshell) targets. Hard DENY."""
     return any(_seg_catastrophic_rm(seg) for seg in _CMD_SEP.split(cmd))

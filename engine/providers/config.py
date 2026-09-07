@@ -85,12 +85,12 @@ def build_router_from_env(dotenv: str | Path | None = ".env") -> ModelRouter:
     available = list(by_provider.values())
     if not available:
         raise RuntimeError(
-            "no provider configured — set DEEPSEEK_API_KEY (and/or MOONSHOT_/ZHIPU_/ZENMUX_)"
+            "no provider configured: set DEEPSEEK_API_KEY (and/or MOONSHOT_/ZHIPU_/ZENMUX_)"
         )
 
     # Explicit role→provider overrides:
-    #   AGENT_SMART_PROVIDER — the reasoning-heavy work (default: a strong model if present)
-    #   AGENT_FAST_PROVIDER  — fast hot-path calls (default: a cheap model)
+    #   AGENT_SMART_PROVIDER: the reasoning-heavy work (default: a strong model if present)
+    #   AGENT_FAST_PROVIDER : fast hot-path calls (default: a cheap model)
     smart = (by_provider.get(os.environ.get("AGENT_SMART_PROVIDER", ""))
              or zenmux or zhipu or moonshot or deepseek or available[0])
     fast = (by_provider.get(os.environ.get("AGENT_FAST_PROVIDER", ""))

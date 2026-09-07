@@ -1,4 +1,4 @@
-"""Hook engine — lifecycle gates and side effects around tool use.
+"""Hook engine: lifecycle gates and side effects around tool use.
 
 Supports the two hook types that make sense to run in-process:
   - FunctionHook: a Python callable. Best for a fast in-process policy gate.
@@ -12,12 +12,12 @@ Sync and async firing
 ---------------------
 Hooks run inside an async agent loop, and a hook that shells out to a policy service is
 routine. `CommandHook.run()` uses a blocking `subprocess.run`, so calling it directly from
-a coroutine stalls the WHOLE event loop — every other agent, request and task in the
-process — for as long as the hook takes (up to its timeout, 30s by default).
+a coroutine stalls the WHOLE event loop (every other agent, request and task in the
+process) for as long as the hook takes (up to its timeout, 30s by default).
 
 So the engine exposes both shapes:
-  * `fire()` / `gate()`      — synchronous, for sync callers (PermissionEngine.check).
-  * `fire_async()` / `gate_async()` — offload each hook to a worker thread via
+  * `fire()` / `gate()`: synchronous, for sync callers (PermissionEngine.check).
+  * `fire_async()` / `gate_async()`: offload each hook to a worker thread via
     `asyncio.to_thread`, so a slow hook blocks only its own thread. The agent loop uses
     these. A hook that raises is contained and reported as a failed outcome rather than
     propagating into the permission path.
@@ -172,7 +172,7 @@ class HookEngine:
     @staticmethod
     def _resolve_gate(outcomes: list[HookOutcome]) -> Optional[Decision]:
         """Resolve a PreToolUse gate. A hook that RAISED has no verdict, so the gate cannot
-        conclude "nothing objected" — it resolves to ASK (fail-closed) unless another hook
+        conclude "nothing objected": it resolves to ASK (fail-closed) unless another hook
         already denied. Treating a crashed policy gate as silence is a fail-OPEN bypass."""
         deciding_allow: Optional[Decision] = None
         errored: list[str] = []

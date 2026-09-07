@@ -1,4 +1,4 @@
-"""Context compaction — Claude Code's autoCompact, ported.
+"""Context compaction: Claude Code's autoCompact, ported.
 
 Recovered helper: when a conversation grows too long, summarize the whole transcript into
 one dense, structured summary and continue from it, so the context window never overflows.
@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from typing import Any
 
-# Must contain the word "summariz…" — callers/tests detect the summarizer turn by it.
+# Must contain the word "summariz…" - callers/tests detect the summarizer turn by it.
 SUMMARY_SYSTEM = (
     "You are a compaction assistant. Summarize the conversation below into a dense, "
     "structured summary that preserves everything needed to CONTINUE the work without the "
@@ -61,14 +61,14 @@ def _render(messages: list[dict]) -> str:
 
 
 def _pinned_block(pinned: list[str] | None) -> str | None:
-    """Render pinned notes as a verbatim, clearly-labelled block (deterministic — never
+    """Render pinned notes as a verbatim, clearly-labelled block (deterministic: never
     routed through the summarizer, so verified facts/decisions cannot be summarized away)."""
     items = [str(p).strip() for p in (pinned or []) if str(p).strip()]
     if not items:
         return None
     body = "\n".join(f"- {it}" for it in items)
     return (
-        "PINNED NOTES CARRIED ACROSS COMPACTION (verified — do not drop or contradict; "
+        "PINNED NOTES CARRIED ACROSS COMPACTION (verified: do not drop or contradict; "
         "these survive verbatim):\n" + body
     )
 
@@ -83,8 +83,8 @@ async def compact_transcript(
     fresh with the summary carried as a single user message.
 
     `pinned`, if given, is a list of durable notes (verified facts, key decisions) that are
-    re-injected VERBATIM as a separate leading message — deterministically, not via the model
-    — so they survive compaction even if the LLM summary omits or garbles them. This is what
+    re-injected VERBATIM as a separate leading message (deterministically, not via the model)
+    so they survive compaction even if the LLM summary omits or garbles them. This is what
     stops a run from losing already-verified work when the window fills.
     """
     transcript = _render(messages or [])

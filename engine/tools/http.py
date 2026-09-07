@@ -83,11 +83,11 @@ def make_http_request(
 ):
     """Return an async HTTP tool fn.
 
-    `network_policy` — re-checked on every redirect hop (see the module docstring). Pass the
+    `network_policy`: re-checked on every redirect hop (see the module docstring). Pass the
     same policy object given to the PermissionEngine so pre-flight and in-flight agree.
-    `client` — an injected AsyncClient to reuse; without one a pooled client is created once
+    `client`: an injected AsyncClient to reuse; without one a pooled client is created once
     and shared by every call, instead of a fresh TLS handshake per request.
-    `redact` — (request_headers, response_body) -> (headers, body) applied before auditing.
+    `redact`: (request_headers, response_body) -> (headers, body) applied before auditing.
     """
     owned_client: dict = {"c": client}
 

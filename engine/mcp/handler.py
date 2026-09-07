@@ -1,7 +1,7 @@
-"""MCP handler — port of CC's src/services/mcp (client.ts, MCPConnectionManager).
+"""MCP handler: port of CC's src/services/mcp (client.ts, MCPConnectionManager).
 
 Responsibilities:
-  - hold N server connections (stdio/sse/http — CC supports all; stdio is our default);
+  - hold N server connections (stdio/sse/http: CC supports all; stdio is our default);
   - list_tools() per server, namespace names as `{server_id}__{tool_name}` to avoid
     collisions across servers (CC does the same);
   - get_tool_specs() -> Anthropic `tools=` format (merged, deduped);
@@ -25,8 +25,8 @@ _NS_SEP = "__"
 
 # Provider tool-name rule (OpenAI and Anthropic both): ^[a-zA-Z0-9_-]{1,64}$. An MCP server
 # is free to name a tool "do it now!" or to use a server id with a dot; passing that straight
-# through produced a spec the provider rejects with a 400 that kills the whole run — for a
-# reason the operator cannot see. Names are sanitised here instead, and the original is kept
+# through produced a spec the provider rejects with a 400 that kills the whole run (for a
+# reason the operator cannot see). Names are sanitised here instead, and the original is kept
 # for routing so the server still receives the name it published.
 _NAME_BAD_CHARS = re.compile(r"[^A-Za-z0-9_-]+")
 _MAX_NAME = 64
@@ -118,7 +118,7 @@ class MCPHandler:
         """Pull tool lists from every server and (re)build the spec table.
 
         Per-server fault isolation: if one server errors on list_tools it is recorded in
-        self.failures and skipped — the other servers' tools are still loaded, and the call
+        self.failures and skipped: the other servers' tools are still loaded, and the call
         never raises. (Regression guard: a single broken MCP server must not blank every
         tool or crash the session.)"""
         self._specs.clear()

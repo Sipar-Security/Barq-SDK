@@ -1,4 +1,4 @@
-"""Permission decision types — port of CC's src/types/permissions.ts.
+"""Permission decision types: port of CC's src/types/permissions.ts.
 
 CC behaviors: allow | ask | deny | passthrough. We keep allow/ask/deny (passthrough
 is an internal chaining detail we express by returning None from a check instead).

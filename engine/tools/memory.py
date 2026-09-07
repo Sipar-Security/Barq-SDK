@@ -12,7 +12,7 @@ SAVE_MEMORY_SPEC = {
     "name": "SaveMemory",
     "description": (
         "Persist ONE durable fact (user/feedback/project/reference). Do NOT save "
-        "re-derivable noise — only context worth carrying to a future run."
+        "re-derivable noise; only context worth carrying to a future run."
     ),
     "input_schema": {
         "type": "object",

@@ -1,7 +1,7 @@
 """Tool-argument validation against a tool spec's declared `input_schema`.
 
 A tool spec advertises an `input_schema` to the model; without a check on the way back in,
-whatever the model emits reaches the handler unchanged — a missing required field, a string
+whatever the model emits reaches the handler unchanged: a missing required field, a string
 where an integer was declared, an unknown key. Every tool author then has to re-implement
 the same validation, and the ones who forget get a stack trace instead of a usable error.
 
@@ -93,7 +93,7 @@ def _check(value: Any, schema: dict, path: str, errors: list[str]) -> None:
 def validate_tool_input(value: Any, schema: dict | None) -> list[str]:
     """Return a list of validation errors ([] when the input is acceptable).
 
-    An absent or non-dict schema validates everything — a tool that declares no schema
+    An absent or non-dict schema validates everything; a tool that declares no schema
     has, by definition, no contract to break.
     """
     if not isinstance(schema, dict) or not schema:

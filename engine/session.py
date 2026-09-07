@@ -1,4 +1,4 @@
-"""Session persistence — crash-resume for the agent loop.
+"""Session persistence: crash-resume for the agent loop.
 
 The coordinator's message history lives only in memory: a crash mid-run would lose the
 entire reasoning + tool-call transcript and force a restart from turn 0. `SessionStore`
@@ -6,17 +6,17 @@ snapshots that transcript to disk after every turn boundary so a later run can p
 and continue.
 
 Engine-general: it persists an opaque list of message dicts and a `done` flag. It knows
-nothing about the task domain — any agent built on this engine can use it.
+nothing about the task domain; any agent built on this engine can use it.
 
 Storage format
 --------------
 Append-only JSONL: a `meta` line, then one line per message. Snapshotting used to serialise
-the WHOLE transcript on every turn, so a run wrote O(n²) bytes in total — on a tool-heavy
+the WHOLE transcript on every turn, so a run wrote O(n²) bytes in total. On a tool-heavy
 run with large results that dominates the run's I/O for no benefit. Now a turn appends only
 the messages that are actually new.
 
 A full rewrite still happens when the transcript shrinks or diverges (which is exactly what
-context compaction does — it replaces the list), so correctness never depends on the
+context compaction does (it replaces the list), so correctness never depends on the
 transcript only ever growing. Writes are atomic (temp file + os.replace) so a crash during
 a rewrite cannot leave a half-written, unparseable snapshot behind; appends are flushed and
 fsync'd per turn.

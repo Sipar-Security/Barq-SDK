@@ -1,4 +1,4 @@
-"""Permission-rule syntax parser — port of CC's rule syntax used by both hook `if`
+"""Permission-rule syntax parser: port of CC's rule syntax used by both hook `if`
 conditions (schemas/hooks.ts:19-27) and permission rules.
 
 Syntax:  ToolName            -> matches any call to that tool

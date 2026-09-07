@@ -1,4 +1,4 @@
-"""FilesystemGuard — path read/write policy.
+"""FilesystemGuard: path read/write policy.
 
 Mirrors CC's sandbox filesystem config (entrypoints/sandboxTypes.ts: allowWrite,
 denyWrite, denyRead, allowRead). Semantics match CC:
@@ -8,7 +8,7 @@ denyWrite, denyRead, allowRead). Semantics match CC:
 
 By default, credential paths (~/.ssh, cloud creds, gnupg, and this project's .env with
 our MCP/model keys) are denied for reading even though the process could technically
-reach them — exactly CC's denyRead-credentials posture. This is our own enforcement
+reach them (exactly CC's denyRead-credentials posture). This is our own enforcement
 layer for the agent's file tools; it is NOT an OS sandbox.
 """
 
@@ -40,7 +40,7 @@ def default_credential_denylist() -> tuple[Path, ...]:
 
 
 # Secret files that must never be READ by the agent's file tools, matched by name/suffix
-# WHEREVER they live — not only under a home credential dir. The region denylist above
+# WHEREVER they live, not only under a home credential dir. The region denylist above
 # covers ~/.ssh etc.; this closes the ".env is readable anywhere" gap (the region list did
 # not cover a project-local .env, and ReadFile was the only tool honouring the guard at all).
 # Template envs are
@@ -55,7 +55,7 @@ _TEMPLATE_ENV_NAMES = frozenset({
     ".env.example", ".env.sample", ".env.template", ".env.dist", ".env.defaults",
 })
 SENSITIVE_READ_SUFFIXES = (".pem", ".key", ".p12", ".pfx", ".keystore", ".ppk")
-# Path segments that denote a credential directory — used to scan raw shell commands
+# Path segments that denote a credential directory, used to scan raw shell commands
 # (readonly.py) where there is no resolved Path to region-match.
 CREDENTIAL_DIR_SEGMENTS = frozenset({
     ".ssh", ".aws", ".gnupg", ".azure", ".kube", ".docker", "gcloud",
@@ -127,7 +127,7 @@ class FilesystemGuard:
         # An explicit allow_read region always wins (re-allows within a denied region).
         if _under(p, self.policy.allow_read):
             return True
-        # Secret files (by name/suffix) are denied wherever they live — this is the layer
+        # Secret files (by name/suffix) are denied wherever they live; this is the layer
         # ReadFile/Grep/ListDir all consult, so the guarantee is consistent across tools.
         if self.policy.block_sensitive_names and name_is_sensitive_read(p):
             return False

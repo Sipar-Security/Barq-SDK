@@ -349,7 +349,7 @@ def test_same_turn_tools_run_in_parallel(tmp_path):
         return loop.time() - t0
 
     elapsed = asyncio.run(timed())
-    assert elapsed < 0.6, f"4x0.25s ran in {elapsed:.2f}s — still sequential"
+    assert elapsed < 0.6, f"4x0.25s ran in {elapsed:.2f}s - still sequential"
 
 
 def test_results_keep_the_order_of_their_calls(tmp_path):

@@ -1,9 +1,9 @@
-"""Read-only command classifier — Claude Code's `isReadOnly` gate, ported.
+"""Read-only command classifier: Claude Code's `isReadOnly` gate, ported.
 
 Recovered helper: decides whether a shell command is *provably* read-only, so the
 PermissionEngine can downgrade a mode-default ASK to ALLOW for it (auto-run `git status`,
 `ls`, `Get-ChildItem` without a prompt) while everything else still asks. It is applied
-ONLY at the mode-default step — after hook/scope/danger/rules — so it can never override a
+ONLY at the mode-default step (after hook/scope/danger/rules) so it can never override a
 deny; the worst it can do is *fail to* auto-allow a safe command (→ one extra prompt).
 
 Design principle: fail CLOSED. If there is ANY doubt (metacharacters that could chain,
@@ -20,7 +20,7 @@ from engine.sandbox.filesystem import (
 )
 
 # A read-only command that nonetheless targets a secret path (`cat ~/.ssh/id_rsa`,
-# `type project\.env`, `Get-Content server.pem`) must NOT auto-allow — otherwise the shell
+# `type project\.env`, `Get-Content server.pem`) must NOT auto-allow: otherwise the shell
 # becomes a hole around the file-tool credential guard. Detecting it here downgrades the call
 # to a normal ASK (fail-closed: at worst one extra prompt for a benign path that merely looks
 # secret). Kept in sync with the FilesystemGuard read denylist (single source of truth).
@@ -43,7 +43,7 @@ def _references_sensitive_path(command: str) -> bool:
 # redirection, in-place edit, PowerShell method/expression calls, stop-parsing, UNC paths,
 # and ANY parenthesis. Parentheses are load-bearing here: PowerShell evaluates `(...)` and
 # `$(...)`/`@(...)`/`&(...)` subexpressions IMMEDIATELY, so `echo (Remove-Item x)` runs
-# Remove-Item — it is NOT read-only. We reject any `(`/`)` (a legit read-only command that
+# Remove-Item: it is NOT read-only. We reject any `(`/`)` (a legit read-only command that
 # happens to contain a paren just falls through to a normal ASK prompt, which is safe).
 # NOTE: a plain pipe `|` is allowed and handled by splitting into segments (each segment
 # must itself be read-only), so `ls | grep x | wc -l` stays read-only.
@@ -71,16 +71,16 @@ _READONLY_BINS = frozenset({
 })
 
 # Sub-command allowlists for tools that are read-only only in some modes. Membership here is
-# necessary but NOT sufficient — a mutating flag/subcommand (checked below) still disqualifies
+# necessary but NOT sufficient: a mutating flag/subcommand (checked below) still disqualifies
 # the call, because `git branch` reads but `git branch -D` deletes, `docker system` reads but
 # `docker system prune` wipes.
 _GIT_RO = frozenset({
     "status", "log", "diff", "show", "branch", "tag", "remote", "rev-parse",
     "describe", "ls-files", "ls-tree", "cat-file", "blame", "shortlog", "reflog",
     "whatchanged", "name-rev", "symbolic-ref", "for-each-ref", "count-objects",
-    "config",  # only a pure getter/list — see _git_config_read_only
+    "config",  # only a pure getter/list - see _git_config_read_only
 })
-# Tokens (subcommands OR flags) that make a git/docker call MUTATING — any one disqualifies.
+# Tokens (subcommands OR flags) that make a git/docker call MUTATING: any one disqualifies.
 _GIT_MUTATING = frozenset({
     "-d", "-D", "--delete", "-M", "--move", "-f", "--force", "-u", "--set-upstream",
     "--unset", "--add", "--replace-all", "--edit", "--amend", "--set",
@@ -104,7 +104,7 @@ _DOCKER_MUTATING = frozenset({
 def _git_config_read_only(args: list[str]) -> bool:
     """`git config` is read-only ONLY if it is a pure getter/list with no value to set. The
     bypass `git config user.name Hacker --list` sets first (key + value = 2 bare tokens) then
-    reads — so we require a read flag AND at most one bare (non-flag) token (the key)."""
+    reads: so we require a read flag AND at most one bare (non-flag) token (the key)."""
     read_flags = {"--get", "--get-all", "--get-regexp", "--get-urlmatch", "--list", "-l"}
     if not any(a in read_flags for a in args):
         return False
@@ -165,7 +165,7 @@ def is_read_only_command(command: str) -> bool:
     if not cmd:
         return False
     if _references_sensitive_path(cmd):
-        return False  # reading a secret path is never auto-allowed — fall through to ASK
+        return False  # reading a secret path is never auto-allowed: fall through to ASK
     for pat in _DANGEROUS:
         if pat in cmd:
             return False
