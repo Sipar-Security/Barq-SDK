@@ -1,0 +1,24 @@
+[project]
+name = "engine"
+version = "0.1.0"
+description = "A small, embeddable SDK for building tool-using AI agents in Python"
+requires-python = ">=3.12"
+dependencies = [
+    # MCP client (stdio tool servers). Optional at runtime — only imported when you
+    # actually connect an MCP server.
+    "mcp>=1.23",
+    # OpenAI-compatible model calls go over httpx; no vendor SDK on purpose.
+    "httpx>=0.28",
+]
+
+[project.optional-dependencies]
+# Ed25519 seals for the audit log (HMAC + SHA-256 chaining work without it).
+crypto = ["cryptography>=43"]
+dev = ["pytest>=8"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.setuptools.packages.find]
+include = ["engine*"]
