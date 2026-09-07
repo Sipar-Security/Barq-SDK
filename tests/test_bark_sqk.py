@@ -1,4 +1,4 @@
-"""Tests for Bark-SQK package compatibility, imports, environment variables, and genesis prefixing."""
+"""Tests for Barq-SDK package compatibility, imports, environment variables, and genesis prefixing."""
 
 import os
 import tempfile
@@ -41,6 +41,6 @@ def test_bark_sqk_audit_signing_key_env(monkeypatch, tmp_path):
 
 
 def test_bark_sqk_genesis_prefix():
-    assert _GENESIS_PREFIX.startswith("bark-sqk-audit-v")
+    assert _GENESIS_PREFIX.startswith("Barq-SDK-audit-v")
     h = genesis_hash("test-chain")
     assert isinstance(h, str) and len(h) == 64
