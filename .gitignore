@@ -101,6 +101,5 @@ db.sqlite
 session.json
 tooljournal.jsonl
 audit*.jsonl
-/memory/
 
 commit.sh
