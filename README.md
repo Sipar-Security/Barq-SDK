@@ -1,4 +1,4 @@
-# Bark-SQK: a small SDK for building tool-using AI agents
+# Barq-SDK: a small SDK for building tool-using AI agents
 
 A compact, embeddable Python library for building agents that call tools, use MCP servers,
 remember facts across runs, and stay inside a permission policy (with a tamper-evident
