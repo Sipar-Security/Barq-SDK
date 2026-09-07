@@ -2,13 +2,13 @@
 
 Four types: user, feedback, project, reference. One fact per file with frontmatter; a
 MEMORY.md index holds one pointer line per memory. This is durable *context*, not a log of
-transient outputs — do not fill it with re-derivable noise (code patterns, architecture,
-git history, ephemeral state — anything derivable by reading the current project state).
+transient outputs, do not fill it with re-derivable noise (code patterns, architecture,
+git history, ephemeral state, anything derivable by reading the current project state).
 
 Recall
 ------
 Scoring covers name, description AND body. Scoring only name+description (the previous
-behaviour) meant a fact stated in the body — which is where facts actually live — was
+behaviour) meant a fact stated in the body, which is where facts actually live, was
 unreachable unless the description happened to repeat it.
 
 Recall is served from an in-memory index built once and refreshed only for files whose
