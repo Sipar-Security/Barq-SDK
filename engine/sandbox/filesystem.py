@@ -62,6 +62,61 @@ CREDENTIAL_DIR_SEGMENTS = frozenset({
 })
 
 
+# --- paths that execute code without anyone deciding to run them ---------------
+# Write confinement to the workdir is a FILESYSTEM boundary, and the documentation treats
+# it as the real security boundary. It is not a code-execution boundary: when the workdir
+# is a repository a developer will subsequently work in, an agent that writes one of these
+# gets its code run outside every policy layer, with the human's privileges, the next time
+# they run a routine command.
+#
+# Reproduced against the shipped default: `.git/hooks/pre-commit`, `.github/workflows/ci.yml`,
+# `conftest.py` and `sitecustomize.py` were all writable. Respectively: the next `git commit`,
+# the next CI run, the next `pytest`, and the next `python` in that directory.
+#
+# `.claude/`, `.cursor/` and friends are here for a different reason: they configure the
+# AGENT. An agent able to write its own hook and permission configuration can disarm the
+# controls that are supposed to bound it.
+AUTO_EXECUTING_DIRS: tuple[tuple[str, ...], ...] = (
+    (".git", "hooks"),      # runs on commit / push / checkout
+    (".github",),           # Actions workflows and composite actions
+    (".circleci",),
+    (".gitea",),
+    (".husky",),            # git hooks, npm-managed
+    (".vscode",),           # tasks.json / launch.json run commands
+    (".idea",),
+    (".devcontainer",),     # postCreateCommand
+    (".claude",),           # the agent's own hooks and permissions
+    (".cursor",),
+    (".continue",),
+)
+AUTO_EXECUTING_NAMES = frozenset({
+    # Python imports these automatically, with no import statement anywhere
+    "conftest.py", "sitecustomize.py", "usercustomize.py",
+    # shell startup
+    ".envrc", ".bashrc", ".bash_profile", ".bash_login", ".profile",
+    ".zshrc", ".zshenv", ".zprofile", ".zlogin",
+    # CI definitions
+    ".gitlab-ci.yml", "jenkinsfile", "azure-pipelines.yml", ".travis.yml",
+    "bitbucket-pipelines.yml", "cloudbuild.yaml", ".drone.yml", "appveyor.yml",
+    # commit-time hooks
+    ".pre-commit-config.yaml", ".pre-commit-hooks.yaml",
+})
+
+
+def is_auto_executing_path(path: str | Path) -> bool:
+    """True if writing this path plants code that later runs without anyone invoking it."""
+    p = Path(path)
+    if p.name.lower() in AUTO_EXECUTING_NAMES:
+        return True
+    parts = [seg.lower() for seg in p.parts]
+    for segs in AUTO_EXECUTING_DIRS:
+        n = len(segs)
+        for i in range(len(parts) - n + 1):
+            if tuple(parts[i:i + n]) == segs:
+                return True
+    return False
+
+
 def name_is_sensitive_read(path: str | Path) -> bool:
     """True if a filename looks like a secret that must not be read (by name or suffix)."""
     name = Path(path).name.lower()
@@ -80,6 +135,20 @@ class FilesystemPolicy:
     deny_read: tuple[Path, ...] = ()
     allow_read: tuple[Path, ...] = ()
     block_sensitive_names: bool = True  # deny reads of .env/*.pem/id_rsa/... anywhere
+    # Refuse writes to paths that execute code later without anyone invoking them (git
+    # hooks, CI definitions, conftest.py, shell rc files, the agent's own config). Write
+    # confinement bounds WHERE the agent can write; this bounds what that write can DO.
+    # An explicit `allow_write` entry naming such a path re-permits it, so an integrator
+    # whose agent legitimately maintains CI can opt back in, per path.
+    protect_auto_executing: bool = True
+    # When True, reads are confined to the workdir + allow_read the way writes are confined
+    # to the workdir + allow_write. Off by default because an agent working on a codebase
+    # legitimately reads outside its workspace (a system header, a sibling repo, a config),
+    # and silently breaking that is worse than the alternative. But leaving reads
+    # unrestricted means the only thing standing between the whole filesystem and an
+    # outbound HTTP tool is the credential denylist, so a deployment that grants network
+    # egress should turn this on.
+    confine_reads: bool = False
 
     @classmethod
     def build(
@@ -91,6 +160,8 @@ class FilesystemPolicy:
         allow_read: tuple[str, ...] = (),
         include_credential_denylist: bool = True,
         block_sensitive_names: bool = True,
+        confine_reads: bool = False,
+        protect_auto_executing: bool = True,
     ) -> "FilesystemPolicy":
         dr = tuple(_resolve(p) for p in deny_read)
         if include_credential_denylist:
@@ -102,6 +173,8 @@ class FilesystemPolicy:
             deny_read=dr,
             allow_read=tuple(_resolve(p) for p in allow_read),
             block_sensitive_names=block_sensitive_names,
+            confine_reads=confine_reads,
+            protect_auto_executing=protect_auto_executing,
         )
 
 
@@ -133,6 +206,12 @@ class FilesystemGuard:
             return False
         if _under(p, self.policy.deny_read):
             return False
+        # Optional read confinement, mirroring the write rule. Off by default (see
+        # FilesystemPolicy.confine_reads) because agents legitimately read outside their
+        # workspace; on, it is the difference between "the credential denylist is the only
+        # thing between the whole filesystem and an outbound HTTP tool" and a real boundary.
+        if self.policy.confine_reads:
+            return _under(p, (self.policy.workdir,) + self.policy.allow_read)
         return True
 
     def can_write(self, path: str | Path) -> bool:
@@ -142,6 +221,14 @@ class FilesystemGuard:
             return False
         if _under(p, self.policy.deny_write):
             return False
+        # Being inside the workdir bounds WHERE the agent writes, not what the write DOES.
+        # A file that later executes on its own - a git hook, a CI definition, conftest.py,
+        # a shell rc file, the agent's own hook config - runs outside every policy layer
+        # with the operator's privileges. An explicit allow_write entry naming the path (or
+        # a directory containing it) is the documented opt-in.
+        if self.policy.protect_auto_executing and is_auto_executing_path(p):
+            if not _under(p, self.policy.allow_write):
+                return False
         return True
 
     # convenience: raise instead of returning False (for use inside file tools)
