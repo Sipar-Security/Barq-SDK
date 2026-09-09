@@ -12,12 +12,26 @@ the most common way a model destroys work. ListDir, FindFiles and EditFile close
 
 from __future__ import annotations
 
+import asyncio
 import fnmatch
+import os
 from pathlib import Path
 
 from engine.sandbox import FilesystemGuard
 
 _MAX_READ = 20000
+
+# Filesystem calls block. Inside `async def` they block the whole EVENT LOOP, not just the
+# calling task — a FindFiles over 1,800 files was measured freezing it for 1.2 s, which
+# stalls every other agent, request and MCP session in the process, and makes the
+# coordinator's `max_parallel_tools` fan-out meaningless for the built-in tools. Every
+# tool below does its I/O in a worker thread instead.
+#
+# The guard checks stay on the calling thread: they are pure path arithmetic, and running
+# them inline keeps a denial cheap and keeps the decision adjacent to the code that reads
+# it, rather than one thread-hop away from it.
+async def _off_loop(fn, *args):
+    return await asyncio.to_thread(fn, *args)
 
 READ_FILE_SPEC = {
     "name": "ReadFile",
@@ -99,7 +113,7 @@ def make_read_file(guard: FilesystemGuard):
         except Exception as e:  # FilesystemViolation
             return f"DENIED: {e}"
         try:
-            text = p.read_text(encoding="utf-8", errors="replace")
+            text = await _off_loop(p.read_text, "utf-8", "replace")
         except OSError as e:
             return f"READ_ERROR: {e}"
         offset = max(0, int(inp.get("offset") or 0))
@@ -128,9 +142,12 @@ def make_write_file(guard: FilesystemGuard):
             p = guard.assert_write(inp["path"])
         except Exception as e:
             return f"DENIED: {e}"
-        try:
+        def _write() -> None:
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text(content, encoding="utf-8")
+
+        try:
+            await _off_loop(_write)
         except OSError as e:
             return f"WRITE_ERROR: {e}"
         return f"wrote {len(content)} bytes to {p}"
@@ -149,7 +166,7 @@ def make_edit_file(guard: FilesystemGuard):
         except Exception as e:
             return f"DENIED: {e}"
         try:
-            text = p.read_text(encoding="utf-8")
+            text = await _off_loop(p.read_text, "utf-8")
         except OSError as e:
             return f"READ_ERROR: {e}"
         count = text.count(old)
@@ -162,7 +179,7 @@ def make_edit_file(guard: FilesystemGuard):
             )
         updated = text.replace(old, new) if inp.get("replace_all") else text.replace(old, new, 1)
         try:
-            p.write_text(updated, encoding="utf-8")
+            await _off_loop(p.write_text, updated, "utf-8")
         except OSError as e:
             return f"WRITE_ERROR: {e}"
         return f"replaced {count if inp.get('replace_all') else 1} occurrence(s) in {p}"
@@ -176,24 +193,33 @@ def make_list_dir(guard: FilesystemGuard):
             p = guard.assert_read(inp["path"])
         except Exception as e:
             return f"DENIED: {e}"
-        if not p.is_dir():
-            return f"NOT_A_DIRECTORY: {p}"
+
+        def _scan() -> str | None:
+            if not p.is_dir():
+                return None
+            # scandir carries is_dir/stat with each entry, so one pass answers everything;
+            # iterdir + a stat() per name was three syscalls per file.
+            rows: list[tuple[bool, str, str]] = []
+            with os.scandir(p) as it:
+                for entry in it:
+                    try:
+                        if entry.is_dir():
+                            rows.append((True, entry.name.lower(), f"{entry.name}/"))
+                            continue
+                        size = entry.stat().st_size
+                        rows.append((False, entry.name.lower(), f"{entry.name}  ({size} bytes)"))
+                    except OSError:
+                        rows.append((False, entry.name.lower(), entry.name))
+            rows.sort(key=lambda r: (not r[0], r[1]))
+            return "\n".join(r[2] for r in rows)
+
         try:
-            entries = sorted(p.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower()))
+            listing = await _off_loop(_scan)
         except OSError as e:
             return f"READ_ERROR: {e}"
-        if not entries:
-            return f"{p} is empty"
-        lines = []
-        for e in entries:
-            if e.is_dir():
-                lines.append(f"{e.name}/")
-            else:
-                try:
-                    lines.append(f"{e.name}  ({e.stat().st_size} bytes)")
-                except OSError:
-                    lines.append(e.name)
-        return "\n".join(lines)
+        if listing is None:
+            return f"NOT_A_DIRECTORY: {p}"
+        return listing or f"{p} is empty"
 
     return list_dir
 
@@ -209,17 +235,28 @@ def make_find_files(guard: FilesystemGuard, default_root: Path | None = None):
             return f"NOT_A_DIRECTORY: {root}"
         pattern = str(inp.get("pattern", "*"))
         limit = max(1, min(int(inp.get("limit") or 200), 1000))
-        hits: list[str] = []
+
+        def _walk() -> list[str]:
+            # os.walk over rglob: it yields names per directory without building a Path
+            # object for every entry, and lets us skip a subtree the policy hides instead
+            # of descending into it and filtering afterwards.
+            found: list[str] = []
+            for dirpath, dirnames, filenames in os.walk(root):
+                dirnames[:] = [
+                    d for d in dirnames if guard.can_read(os.path.join(dirpath, d))
+                ]
+                for name in filenames:
+                    if len(found) >= limit:
+                        return found
+                    full = os.path.join(dirpath, name)
+                    rel = os.path.relpath(full, root).replace(os.sep, "/")
+                    if fnmatch.fnmatch(rel, pattern) or fnmatch.fnmatch(name, pattern):
+                        if guard.can_read(full):  # never surface a path policy hides
+                            found.append(rel)
+            return found
+
         try:
-            for p in root.rglob("*"):
-                if len(hits) >= limit:
-                    break
-                if not p.is_file():
-                    continue
-                rel = p.relative_to(root).as_posix()
-                if fnmatch.fnmatch(rel, pattern) or fnmatch.fnmatch(p.name, pattern):
-                    if guard.can_read(p):  # never surface a path policy hides
-                        hits.append(rel)
+            hits = await _off_loop(_walk)
         except OSError as e:
             return f"SEARCH_ERROR: {e}"
         if not hits:
