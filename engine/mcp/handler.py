@@ -99,6 +99,8 @@ class MCPHandler:
         self._list_timeout = list_timeout
         self._evict_failed = evict_failed
         self._consecutive_failures: dict[str, int] = {}
+        # server_id -> (allow | None, deny) over the server's OWN tool names.
+        self._filters: dict[str, tuple[frozenset | None, frozenset]] = {}
 
     def add_server(self, conn: ServerConnection) -> None:
         if conn.server_id in self._servers:
@@ -139,21 +141,68 @@ class MCPHandler:
                 self.failures[sid] = f"{type(e).__name__}: {e}"
                 continue
             self._consecutive_failures.pop(sid, None)
-            for tool in tools:
-                bare = tool["name"]
-                ns = self.namespaced(sid, bare)
-                if ns in self._specs:  # sanitising can map two names onto one
-                    n = 2
-                    while _truncate_name(f"{ns}_{n}") in self._specs:
-                        n += 1
-                    ns = _truncate_name(f"{ns}_{n}")
-                self._specs[ns] = ToolSpec(
-                    name=ns,
-                    description=tool.get("description", ""),
-                    input_schema=tool.get("inputSchema") or tool.get("input_schema") or {},
-                )
-                self._owner[ns] = sid
-                self._bare[ns] = bare  # route with the server's OWN name, not the sanitised one
+            self._install_tools(sid, tools)
+
+    def _install_tools(self, sid: str, tools: list[dict]) -> None:
+        """Build one server's slice of the spec table.
+
+        The single place namespacing, sanitisation, truncation, collision disambiguation
+        and per-server filtering happen. `refresh()` and `reconnect()` both call it: they
+        used to carry separate copies, and reconnect's copy had no collision handling — so
+        after a reconnect two tools whose names sanitise alike collapsed onto one entry and
+        a name the model already knew silently dispatched to a DIFFERENT tool.
+        """
+        self._drop_server(sid)
+        allow, deny = self._filters.get(sid, (None, ()))
+        for tool in tools:
+            bare = tool.get("name")
+            if not bare:
+                continue
+            if allow is not None and bare not in allow:
+                continue
+            if bare in deny:
+                continue
+            ns = self.namespaced(sid, bare)
+            if ns in self._specs:  # sanitising can map two names onto one
+                n = 2
+                while _truncate_name(f"{ns}_{n}") in self._specs:
+                    n += 1
+                ns = _truncate_name(f"{ns}_{n}")
+            self._specs[ns] = ToolSpec(
+                name=ns,
+                description=tool.get("description", ""),
+                input_schema=tool.get("inputSchema") or tool.get("input_schema") or {},
+            )
+            self._owner[ns] = sid
+            self._bare[ns] = bare  # route with the server's OWN name, not the sanitised one
+
+    def _drop_server(self, sid: str) -> None:
+        """Withdraw every tool currently attributed to `sid`.
+
+        Reinstalling without this left tools the server no longer publishes advertised to
+        the model for the rest of the session.
+        """
+        for ns in [n for n, owner in self._owner.items() if owner == sid]:
+            self._specs.pop(ns, None)
+            self._owner.pop(ns, None)
+            self._bare.pop(ns, None)
+
+    def set_tool_filter(
+        self,
+        server_id: str,
+        *,
+        allow: tuple[str, ...] | None = None,
+        deny: tuple[str, ...] = (),
+    ) -> None:
+        """Restrict which of a server's tools are exposed to the model.
+
+        `allow` is an allowlist of the server's OWN tool names (None = all of them); `deny`
+        removes names from whatever survives. Mounting a third-party MCP server is otherwise
+        all-or-nothing, which is rarely what an operator wants when the server ships one
+        tool they need and six they do not. Takes effect on the next refresh/reconnect.
+        """
+        self._filters[server_id] = (frozenset(allow) if allow is not None else None,
+                                    frozenset(deny))
 
     def get_tool_specs(self) -> list[dict]:
         """Anthropic `tools=` payload for all connected MCP tools."""
@@ -196,10 +245,32 @@ class MCPHandler:
         self.failures[sid] = reason
         self._consecutive_failures[sid] = self._consecutive_failures.get(sid, 0) + 1
         if self._evict_failed:
-            for ns in [n for n, owner in self._owner.items() if owner == sid]:
-                self._specs.pop(ns, None)
-                self._owner.pop(ns, None)
-                self._bare.pop(ns, None)
+            self._drop_server(sid)
+
+    async def aclose(self) -> None:
+        """Close every server connection that owns one.
+
+        Nothing used to close them: a host that mounted stdio servers per-Agent leaked a
+        subprocess per agent unless the caller happened to hold each connection in its own
+        `async with`. Connections that expose no close are simply skipped, and one failing
+        close never prevents the others.
+        """
+        for sid, conn in list(self._servers.items()):
+            closer = getattr(conn, "aclose", None) or getattr(conn, "__aexit__", None)
+            if not callable(closer):
+                continue
+            try:
+                result = closer(None, None, None) if closer.__name__ == "__aexit__" else closer()
+                if hasattr(result, "__await__"):
+                    await result
+            except Exception as e:
+                self.failures[sid] = f"close failed: {type(e).__name__}: {e}"
+        self._drop_all()
+
+    def _drop_all(self) -> None:
+        self._specs.clear()
+        self._owner.clear()
+        self._bare.clear()
 
     async def reconnect(self, server_id: str) -> bool:
         """Re-list one server's tools and, on success, restore them to the spec table.
@@ -228,16 +299,7 @@ class MCPHandler:
         except Exception as e:
             self.failures[server_id] = f"{type(e).__name__}: {e}"
             return False
-        for tool in tools:
-            bare = tool["name"]
-            ns = self.namespaced(server_id, bare)
-            self._specs[ns] = ToolSpec(
-                name=ns,
-                description=tool.get("description", ""),
-                input_schema=tool.get("inputSchema") or tool.get("input_schema") or {},
-            )
-            self._owner[ns] = server_id
-            self._bare[ns] = bare
+        self._install_tools(server_id, tools)
         self.failures.pop(server_id, None)
         self._consecutive_failures.pop(server_id, None)
         return True
@@ -289,8 +351,15 @@ class StdioMCPConnection:
         return self
 
     async def __aexit__(self, *exc) -> None:
-        if self._stack is not None:
-            await self._stack.aclose()
+        await self.aclose()
+
+    async def aclose(self) -> None:
+        """Shut the subprocess and session down. Idempotent, so an MCPHandler that owns the
+        connection and a caller holding it in `async with` cannot double-close."""
+        stack, self._stack = self._stack, None
+        self._session = None
+        if stack is not None:
+            await stack.aclose()
 
     async def list_tools(self) -> list[dict]:
         result = await self._session.list_tools()
