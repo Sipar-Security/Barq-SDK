@@ -57,12 +57,108 @@ _EXTRA_RESERVED = (
 )
 
 
-def is_reserved_ip(ip: str) -> bool:
-    """True if `ip` is a reserved/internal address literal (or unparseable → fail closed)."""
+# Hostnames that resolve to an internal endpoint on essentially every platform or cloud.
+# `ipaddress` never sees these because they are names, not literals — but blocking
+# 169.254.169.254 while allowing `metadata.google.internal` is not a guard.
+_INTERNAL_HOSTNAMES = frozenset({
+    "localhost", "localhost.localdomain", "ip6-localhost", "ip6-loopback",
+    "metadata", "metadata.google.internal", "metadata.goog",
+    "instance-data", "instance-data.ec2.internal",
+})
+_INTERNAL_SUFFIXES = (
+    ".localhost", ".local", ".internal", ".localdomain", ".home.arpa",
+)
+
+
+def normalize_ip_literal(host: str) -> str | None:
+    """Return the canonical IP for `host` if it is an IP literal in ANY notation, else None.
+
+    `ipaddress.ip_address` accepts only canonical forms, so `2130706433` (decimal),
+    `0x7f000001` (hex), `0177.0.0.1` (octal) and `127.1` (short form) all parsed as
+    "not an IP" and sailed straight past the reserved-address guard — while every OS
+    resolver happily dials them as 127.0.0.1. They are normalised here first.
+    """
+    h = (host or "").strip().strip("[]")
+    if not h:
+        return None
     try:
-        a = ipaddress.ip_address(ip)
+        return str(ipaddress.ip_address(h))
     except ValueError:
+        pass
+    # inet_aton-style forms: 1, 2, 3 or 4 parts, each decimal/octal/hex.
+    parts = h.split(".")
+    if not 1 <= len(parts) <= 4 or any(p == "" for p in parts):
+        return None
+    values: list[int] = []
+    for p in parts:
+        try:
+            if p.lower().startswith(("0x", "0X")):
+                v = int(p, 16)
+            elif p.startswith("0") and len(p) > 1:
+                v = int(p, 8)
+            else:
+                v = int(p, 10)
+        except ValueError:
+            return None
+        if v < 0:
+            return None
+        values.append(v)
+    # The LAST part absorbs the remaining bytes (127.1 -> 127.0.0.1; 2130706433 -> 127.0.0.1).
+    fill = 4 - len(values)
+    if any(v > 255 for v in values[:-1]) or values[-1] >= (1 << (8 * (fill + 1))):
+        return None
+    packed = 0
+    for v in values[:-1]:
+        packed = (packed << 8) | v
+    packed = (packed << (8 * (fill + 1))) | values[-1]
+    try:
+        return str(ipaddress.ip_address(packed))
+    except ValueError:
+        return None
+
+
+def is_internal_hostname(host: str) -> bool:
+    """True if `host` is a name that denotes an internal/loopback endpoint."""
+    h = (host or "").strip().lower().rstrip(".")
+    if not h:
+        return False
+    return h in _INTERNAL_HOSTNAMES or h.endswith(_INTERNAL_SUFFIXES)
+
+
+def is_internal_target(host: str) -> bool:
+    """True if `host` DENOTES an internal endpoint: an internal hostname, or an IP literal
+    (in any notation) in a reserved range.
+
+    This is the check a caller wants for a host that may be either a name or an address.
+    `is_reserved_ip` fails closed on anything it cannot parse as an address, which is the
+    right behaviour when the input is known to be an address and the wrong behaviour for
+    an ordinary hostname — using it directly on `api.example.com` blocks the whole public
+    internet.
+    """
+    if is_internal_hostname(host):
         return True
+    canonical = normalize_ip_literal(host)
+    return canonical is not None and is_reserved_ip(canonical)
+
+
+def is_reserved_ip(ip: str) -> bool:
+    """True if `ip` is a reserved/internal ADDRESS (or unparseable → fail closed).
+
+    Accepts any IP notation a resolver would (see `normalize_ip_literal`). Because it fails
+    closed, only pass it something you already know to be an address — for a value that
+    might be a hostname, use `is_internal_target`.
+    """
+    if is_internal_hostname(ip):
+        return True
+    canonical = normalize_ip_literal(ip)
+    if canonical is None:
+        return True  # not an address we can reason about: fail closed
+    a = ipaddress.ip_address(canonical)
+    # An IPv4-mapped/compatible IPv6 address (::ffff:127.0.0.1) must be judged on the IPv4
+    # address it carries, not on the v6 wrapper.
+    mapped = getattr(a, "ipv4_mapped", None) or getattr(a, "sixtofour", None)
+    if mapped is not None:
+        a = mapped
     if (a.is_private or a.is_loopback or a.is_link_local or a.is_reserved
             or a.is_multicast or a.is_unspecified):
         return True
@@ -120,25 +216,27 @@ class HostAllowlist:
         explicit_ip_allow = any(
             _host_matches(host, pat) and _looks_like_ip_pattern(pat) for pat in self._allow
         )
-        # The reserved/internal guard applies only to a raw IP literal - a hostname is
-        # resolved by the network layer, not treated as reserved here.
-        if (self._deny_reserved_ips and _is_ip_literal(host)
-                and is_reserved_ip(host) and not explicit_ip_allow):
-            return NetworkVerdict(False, f"host {host} is a reserved/internal address")
+        # The reserved/internal guard covers an IP literal in ANY notation (decimal, hex,
+        # octal, short form, v4-mapped v6) plus the hostnames that name an internal
+        # endpoint. Checking only canonical dotted-quad left `2130706433`, `0x7f000001`,
+        # `127.1` and `localhost` wide open — every one of which a resolver dials as
+        # loopback.
+        if self._deny_reserved_ips and not explicit_ip_allow:
+            if is_internal_hostname(host):
+                return NetworkVerdict(False, f"host {host} is an internal hostname")
+            canonical = normalize_ip_literal(host)
+            if canonical is not None and is_reserved_ip(canonical):
+                note = "" if canonical == host else f" ({canonical})"
+                return NetworkVerdict(
+                    False, f"host {host}{note} is a reserved/internal address"
+                )
+            # a public hostname falls through to the allow/deny patterns below
         if not self._allow:
             return NetworkVerdict(True, f"host {host} allowed (no allowlist configured)")
         for pat in self._allow:
             if _host_matches(host, pat):
                 return NetworkVerdict(True, f"host {host} matches allow pattern", pat)
         return NetworkVerdict(False, f"host {host} matches no allow pattern")
-
-
-def _is_ip_literal(host: str) -> bool:
-    try:
-        ipaddress.ip_address(host)
-        return True
-    except ValueError:
-        return False
 
 
 def _looks_like_ip_pattern(pattern: str) -> bool:
