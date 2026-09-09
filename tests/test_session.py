@@ -244,7 +244,7 @@ def test_agent_resume_runs_tools_exactly_once(tmp_path):
     except IndexError:
         pass
     assert runs == [1]
-    assert (wd / "session.json").exists()
+    assert (wd / ".agent-state" / "session.jsonl").exists()  # control plane lives outside the writable workdir
 
     # Run 2: resume -> Count must NOT re-run (journal hit); the run finishes cleanly.
     a2 = Agent(model=_ScriptOrCrash([
