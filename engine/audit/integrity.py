@@ -11,7 +11,17 @@ Three layers, each strictly stronger, each optional so there is a zero-dependenc
   1. Hash chain (always on). Every entry carries `prev` = the hash of the entry before
      it and `hash` = H(canonical(entry_core) || prev). The chain is anchored to a random
      `chain_id` per log, so an entry cannot be transplanted from one run's log
-     into another's. Detects accidental corruption, truncation, reordering, and any edit.
+     into another's. Detects accidental corruption, reordering, and any edit or deletion
+     WITHIN the chain.
+
+     It does NOT detect truncation of the TAIL, and cannot: each entry links to the one
+     before it, so dropping the last N leaves a chain that verifies perfectly, and an
+     in-file seal is part of the tail that goes with them. The fix is an anchor held
+     outside the file -- `AuditLog.anchor()` returns `{chain_id, head, count}`; store it
+     where the agent cannot reach and pass it to `verify_audit_file(expected_head=...,
+     expected_count=...)`. Failing that, `VerifyReport.unsealed_tail` reports how many
+     entries sit past the last seal, which is exactly how many could have been removed
+     unnoticed.
      An attacker who holds the file *and* knows the algorithm can recompute the whole
      chain, so this layer alone is tamper-EVIDENT to anyone holding an out-of-band copy
      of any single hash, and tamper-DETECTING against accidents.
@@ -98,6 +108,10 @@ class VerifyReport:
     seals: int = 0             # number of checkpoint seals seen
     seals_verified: int = 0    # of those, how many carried a valid Ed25519 signature
     truncated_tail: bool = False  # final line was a partial write (crash), not a break
+    head: str = ""             # the chain head after the last verified entry
+    sealed_through: int = 0    # highest entry count attested by a seal in this file
+    unsealed_tail: int = 0     # entries past the last seal: how many could be dropped
+                               # unnoticed without an external anchor
 
     def summary(self) -> str:
         if self.ok:
@@ -105,6 +119,8 @@ class VerifyReport:
             s += ", keyed" if self.keyed else ""
             if self.seals:
                 s += f", {self.seals_verified}/{self.seals} signed seals"
+            if self.unsealed_tail:
+                s += f", {self.unsealed_tail} unsealed trailing entries"
             if self.truncated_tail:
                 s += ", trailing partial line ignored"
             return s + ")"
