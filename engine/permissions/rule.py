@@ -15,7 +15,12 @@ import re
 from dataclasses import dataclass
 from fnmatch import fnmatch
 
-_RULE = re.compile(r"^\s*([A-Za-z0-9_]+)\s*(?:\(\s*(.*?)\s*\))?\s*$", re.DOTALL)
+# The tool-name half accepts `*` and `?` so one rule can cover a family of tools. An MCP
+# server contributes N namespaced tools (`github__create_issue`, `github__merge_pr`, …) and
+# without a wildcard an operator had to enumerate every one of them — `mcp__*` and `*` both
+# raised ValueError, so there was no way to write "everything from this server" at all.
+# `-` and `.` are allowed too: MCP tool names legitimately contain them.
+_RULE = re.compile(r"^\s*([A-Za-z0-9_*?.-]+)\s*(?:\(\s*(.*?)\s*\))?\s*$", re.DOTALL)
 
 
 @dataclass(frozen=True)
@@ -36,7 +41,8 @@ def rule_matches(rule: PermissionRule, tool_name: str, match_content: str) -> bo
     # Tool-name match is case-INSENSITIVE: an operator writing `bash(rm *)` must still
     # gate the tool the code registers as `Bash`. A case-sensitive compare here silently
     # voided the rule (and any hook `if` built on it), a fail-OPEN bypass.
-    if rule.tool_name.lower() != tool_name.lower():
+    # It is also a glob, so `mcp__github__*` or `*` covers a whole family in one rule.
+    if not fnmatch(tool_name.lower(), rule.tool_name.lower()):
         return False
     if rule.pattern is None:
         return True
