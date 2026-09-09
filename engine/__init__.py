@@ -24,8 +24,15 @@ Lower level, wire the pieces yourself:
 
 from __future__ import annotations
 
-from engine.agent import Agent
-from engine.coordinator import Coordinator, ModelClient, ModelResponse, run_sync
+from engine.agent import Agent, OutputValidationError
+from engine.coordinator import (
+    Coordinator,
+    ModelClient,
+    ModelResponse,
+    ToolFailure,
+    last_assistant_text,
+    run_sync,
+)
 from engine.hooks import (
     CommandHook,
     FunctionHook,
@@ -34,9 +41,13 @@ from engine.hooks import (
     HookInput,
     HookOutcome,
 )
+from engine.events import AgentEvent, CancelledRun, CancelToken, EventType
 from engine.loopguard import LoopGuard
 from engine.compact import compact_transcript, estimate_tokens
 from engine.mcp import MCPHandler, ServerConnection, StdioMCPConnection
+from engine.structured import extract_json, schema_for
+from engine.telemetry import OTelTelemetry, otel_available
+from engine.tools.decorator import as_tool, is_tool, tool, tool_spec_from
 from engine.validation import validate_tool_input
 from engine.memory import Memory, MemoryStore, MemoryType
 from engine.permissions import (
@@ -59,7 +70,18 @@ __version__ = "0.1.0"
 
 __all__ = [
     "Agent",
+    "OutputValidationError",
     "Coordinator",
+    "ToolFailure",
+    "last_assistant_text",
+    "schema_for",
+    "extract_json",
+    "tool",
+    "as_tool",
+    "is_tool",
+    "tool_spec_from",
+    "OTelTelemetry",
+    "otel_available",
     "ModelClient",
     "ModelResponse",
     "run_sync",
@@ -69,6 +91,10 @@ __all__ = [
     "HookOutcome",
     "FunctionHook",
     "CommandHook",
+    "AgentEvent",
+    "EventType",
+    "CancelToken",
+    "CancelledRun",
     "LoopGuard",
     "compact_transcript",
     "estimate_tokens",
