@@ -20,7 +20,92 @@ import pytest
 
 from engine.permissions.readonly import is_read_only_command
 from engine.sandbox import FilesystemGuard, FilesystemPolicy
-from engine.sandbox.filesystem import FilesystemViolation, name_is_sensitive_read
+from engine.sandbox.filesystem import (
+    FilesystemViolation,
+    is_auto_executing_path,
+    name_is_sensitive_read,
+)
+
+
+# --- writes that plant code the human will later run --------------------------------------
+# Workdir confinement bounds WHERE the agent writes. It is not a code-execution boundary:
+# when the workdir is a repository someone works in, every path below runs the agent's
+# content outside every policy layer, with that person's privileges, the next time they run
+# a routine command. All of these were writable at the shipping default.
+AUTO_EXECUTING = [
+    ".git/hooks/pre-commit",          # the next `git commit`
+    ".git/hooks/post-checkout",
+    "sub/project/.git/hooks/pre-push",  # a nested repository counts too
+    ".github/workflows/ci.yml",       # the next CI run
+    ".github/actions/x/action.yml",
+    ".circleci/config.yml",
+    ".husky/pre-commit",
+    ".vscode/tasks.json",             # the next time the editor opens the folder
+    ".idea/workspace.xml",
+    ".devcontainer/devcontainer.json",
+    ".claude/settings.json",          # the agent's OWN guardrail configuration
+    ".claude/hooks/gate.sh",
+    ".cursor/rules",
+    "conftest.py",                    # the next `pytest`, imported with no import statement
+    "tests/conftest.py",
+    "deep/nested/pkg/conftest.py",
+    "sitecustomize.py",               # the next `python`, imported at interpreter start
+    "usercustomize.py",
+    ".envrc",                         # the next `cd` under direnv
+    ".bashrc",
+    ".zshrc",
+    ".gitlab-ci.yml",
+    "Jenkinsfile",
+    "azure-pipelines.yml",
+    ".pre-commit-config.yaml",
+]
+
+ORDINARY_PROJECT_FILES = [
+    "src/main.py", "README.md", "tests/test_thing.py", "Makefile", "setup.py",
+    "package.json", "pyproject.toml", "docs/conf.py", ".gitignore",
+    ".github-notes.md", "config.yml", "my_conftest_helper.py", "src/.env.example",
+]
+
+
+@pytest.mark.parametrize("rel", AUTO_EXECUTING)
+def test_auto_executing_paths_are_not_writable(tmp_path, rel):
+    guard = FilesystemGuard(FilesystemPolicy.build(tmp_path))
+    assert guard.can_write(tmp_path / rel) is False, f"{rel} must not be writable"
+
+
+@pytest.mark.parametrize("rel", ORDINARY_PROJECT_FILES)
+def test_ordinary_project_files_stay_writable(tmp_path, rel):
+    """The precision side: an agent that cannot edit source is useless."""
+    guard = FilesystemGuard(FilesystemPolicy.build(tmp_path))
+    assert guard.can_write(tmp_path / rel) is True, f"{rel} must stay writable"
+
+
+def test_allow_write_is_the_documented_opt_in(tmp_path):
+    guard = FilesystemGuard(
+        FilesystemPolicy.build(tmp_path, allow_write=(str(tmp_path / ".github"),))
+    )
+    assert guard.can_write(tmp_path / ".github/workflows/ci.yml") is True
+    # …and it re-permits only what it names.
+    assert guard.can_write(tmp_path / ".git/hooks/pre-commit") is False
+
+
+def test_the_protection_can_be_turned_off_wholesale(tmp_path):
+    guard = FilesystemGuard(
+        FilesystemPolicy.build(tmp_path, protect_auto_executing=False)
+    )
+    assert guard.can_write(tmp_path / ".git/hooks/pre-commit") is True
+
+
+def test_protection_does_not_weaken_workdir_confinement(tmp_path):
+    guard = FilesystemGuard(FilesystemPolicy.build(tmp_path))
+    for outside in ("../escape.txt", "/tmp/x.txt", str(Path.home() / "x.txt")):
+        assert guard.can_write(outside) is False
+
+
+def test_is_auto_executing_path_is_case_insensitive():
+    assert is_auto_executing_path("CONFTEST.PY")
+    assert is_auto_executing_path("JenkinsFile")
+    assert is_auto_executing_path(".GitHub/workflows/x.yml")
 
 
 # --- read-only classifier: things that MUST auto-allow ------------------------------------
@@ -28,8 +113,7 @@ from engine.sandbox.filesystem import FilesystemViolation, name_is_sensitive_rea
     "ls", "ls -la", "pwd", "whoami", "hostname", "date", "uname -a",
     "cat README.md", "head -20 file.txt", "tail -f is not here", "wc -l file.txt",
     "git status", "git log --oneline -20", "git diff HEAD~1", "git show abc123",
-    "git branch", "git remote -v", "git rev-parse HEAD", "git config --get user.name",
-    "git config --list",
+    "git branch", "git remote -v", "git rev-parse HEAD",
     "ls | grep test | wc -l", "cat a.txt | sort | uniq",
     "gh pr list", "gh issue view 3", "docker ps", "docker images", "docker inspect x",
     "Get-ChildItem", "Get-Content notes.txt", "Test-Path ./x", "Select-String foo file",
@@ -66,6 +150,39 @@ def test_read_only_commands_auto_allow(cmd):
 ])
 def test_unsafe_commands_never_auto_allow(cmd):
     assert is_read_only_command(cmd) is False, f"{cmd!r} MUST NOT be auto-allowed"
+
+
+# --- read-only, but the OUTPUT is the secret ----------------------------------------------
+# The classifier equated "does not mutate the filesystem" with "safe to run unattended".
+# For an exfiltration threat model - which is the model SECURITY.md adopts - reads are the
+# whole attack, and every command below was auto-allowed with no prompt.
+@pytest.mark.parametrize("cmd", [
+    # the process environment: every API key, including the model provider key this SDK
+    # loaded from .env itself
+    "env", "printenv", "env | grep KEY", "set", "export", "declare -x",
+    "Get-ChildItem Env:", "gci env:",
+    # other processes' command lines routinely carry credentials (`mysql -pSECRET`)
+    "ps aux", "ps -ef", "top -b -n1", "lsof -p 1", "pgrep -a node", "Get-Process",
+    # host secrets whose BASENAME is unremarkable, so the filename denylist never saw them
+    "cat /etc/shadow", "cat /etc/gshadow", "cat /etc/sudoers", "head /etc/master.passwd",
+    "cat /proc/self/environ", "head /proc/1/environ",
+    "cat /etc/ssh/ssh_host_rsa_key", "cat /root/.bashrc", "ls /root",
+    # `git config --list` prints credential.helper and remote URLs with embedded tokens
+    "git config --list", "git config -l", "git config --get credential.helper",
+    "git config --get remote.origin.url",
+    # previously typed commands, secrets included
+    "history", "last", "w", "journalctl -u app",
+])
+def test_secret_disclosing_reads_never_auto_allow(cmd):
+    assert is_read_only_command(cmd) is False, f"{cmd!r} discloses a secret; MUST NOT auto-allow"
+
+
+def test_the_refusals_do_not_cost_ordinary_reads():
+    """The precision side of the same change: tightening must not turn routine inspection
+    into a prompt storm."""
+    for cmd in ("ls -la", "cat README.md", "git status", "git log", "du -sh .",
+                "df -h", "tree -L 2", "docker ps", "Get-Content notes.txt"):
+        assert is_read_only_command(cmd) is True, cmd
 
 
 def test_pipeline_is_read_only_only_if_every_segment_is():
