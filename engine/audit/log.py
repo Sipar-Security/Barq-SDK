@@ -33,40 +33,28 @@ from .redact import default_redactor
 HEADER_KIND = "audit-open"
 SEAL_KIND = "audit-seal"
 
+# Env vars consulted (in order) for an Ed25519 seal signing key. The project has been
+# renamed twice; an operator who configured the key under an older name must not silently
+# start producing UNSIGNED seals, which is a chain-of-custody regression that looks like
+# nothing at all. Current name first, legacy names as fallbacks.
+SIGNING_KEY_ENV_VARS: tuple[str, ...] = (
+    "BARQ_SDK_AUDIT_SIGNING_KEY",
+    "BARK_SQK_AUDIT_SIGNING_KEY",
+    "BBENGINE_AUDIT_SIGNING_KEY",
+)
+
 # --- cross-process append lock ------------------------------------------------
 # The hash chain has ONE head. A threading.Lock only serialises writers inside a single
 # AuditLog object; two Agents, a worker pool, or two processes on the same file each cache
 # their own head, interleave, and fork the chain permanently (verify() then fails forever
 # with no error at write time). An OS file lock plus a head re-read under that lock makes
 # concurrent appenders safe.
-try:  # POSIX
-    import fcntl
-
-    def _lock_file(fh) -> None:
-        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
-
-    def _unlock_file(fh) -> None:
-        fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
-except ImportError:  # Windows
-    import msvcrt
-
-    # msvcrt.locking locks a byte range from the CURRENT position, so every writer must lock
-    # the SAME offset (byte 0) or they exclude nothing. LK_LOCK gives up after ~10s, so retry.
-    def _lock_file(fh) -> None:
-        while True:
-            try:
-                fh.seek(0)
-                msvcrt.locking(fh.fileno(), msvcrt.LK_LOCK, 1)
-                return
-            except OSError:
-                time.sleep(0.01)
-
-    def _unlock_file(fh) -> None:
-        try:
-            fh.seek(0)
-            msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
-        except OSError:
-            pass
+# The platform primitives live in engine.filelock, so there is ONE definition of "take an
+# exclusive OS lock on this handle" rather than a copy per store. (The memory store went
+# without a lock entirely and lost index entries under concurrency; a second private copy
+# of this code is how that happens.)
+from engine.filelock import _lock_fd as _lock_file  # noqa: E402
+from engine.filelock import _unlock_fd as _unlock_file  # noqa: E402
 
 
 def _tail_hash(path: Path) -> Optional[str]:
@@ -109,6 +97,45 @@ class AuditEntry:
         return I.entry_core(self.id, self.ts, self.kind, self.data)
 
 
+# Per-value and total caps on the tool arguments copied into a decision record. The audit
+# log is append-only and hash-chained, so anything written to it is permanent — a 20 MB
+# file body passed to WriteFile must not become a 20 MB permanent record. Long values are
+# truncated and their full sha256 kept, so the record still binds to the exact argument.
+_ARG_VALUE_CHARS = 512
+_ARG_TOTAL_CHARS = 4096
+
+
+def _summarize_args(value: Any, _depth: int = 0) -> Any:
+    """A bounded, structure-preserving copy of a tool's arguments for the audit record."""
+    if _depth > 4:
+        return "…"
+    if isinstance(value, str):
+        if len(value) <= _ARG_VALUE_CHARS:
+            return value
+        return {
+            "_truncated": True,
+            "chars": len(value),
+            "sha256": I.sha256_hex(value),
+            "head": value[:_ARG_VALUE_CHARS],
+        }
+    if isinstance(value, dict):
+        out: dict = {}
+        budget = _ARG_TOTAL_CHARS
+        for k, v in value.items():
+            if budget <= 0:
+                out["_elided"] = True
+                break
+            summarized = _summarize_args(v, _depth + 1)
+            budget -= len(str(summarized))
+            out[str(k)] = summarized
+        return out
+    if isinstance(value, (list, tuple)):
+        return [_summarize_args(v, _depth + 1) for v in value[:20]]
+    if isinstance(value, (int, float, bool)) or value is None:
+        return value
+    return _summarize_args(str(value), _depth)
+
+
 def _coerce_key(key: str | bytes | None) -> Optional[bytes]:
     if key is None:
         return None
@@ -124,11 +151,37 @@ class AuditLog:
         signing_key: str | bytes | None = None,
         chain_id: str | None = None,
         redactor: Any = default_redactor,
+        seal_every: int | None = 100,
+        run_id: str | None = None,
+        durability: str = "fsync",
     ) -> None:
         """`hmac_key` (layer 2) makes the chain unforgeable without the key; keep it in a
         secret store, not the workdir. `signing_key` (layer 3, Ed25519) is used by
         `seal()` for third-party-verifiable checkpoints. Both are optional (with neither,
-        the plain SHA-256 chain still detects tampering)."""
+        the plain SHA-256 chain still detects tampering).
+
+        `seal_every` writes a checkpoint automatically every N entries (None disables it).
+        A checkpoint is what an external anchor captures, and it bounds how much of the
+        tail could be dropped without a verifier noticing — see `verify_audit_file`.
+
+        `run_id` is stamped on every entry so records from concurrent agents sharing one
+        log can be attributed to the run that produced them; a random one is generated if
+        you do not supply it.
+
+        `durability` trades write throughput against how much a crash can lose:
+          * "fsync" (default): every entry is on stable storage before the call returns.
+            Correct, and the reason a measured ~48 entries/sec is the ceiling — each tool
+            call writes one to three entries, so the log alone caps the agent at roughly
+            15-25 tool calls/sec.
+          * "flush": handed to the OS, so a PROCESS crash loses nothing and only a power
+            loss or kernel panic can. An order of magnitude faster, and the right default
+            for a host that also forwards records to a SIEM.
+          * "os": no explicit flush; fastest, loses the tail of the buffer on any crash.
+        The chain, the locking and the verification are identical in all three."""
+        if durability not in ("fsync", "flush", "os"):
+            raise ValueError(
+                f"durability must be 'fsync', 'flush' or 'os', not {durability!r}"
+            )
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         # Applied to every record BEFORE hashing, so the chain covers the redacted bytes and
@@ -137,6 +190,13 @@ class AuditLog:
         self._redactor = redactor
         self._hmac_key = _coerce_key(hmac_key)
         self._signing_raw = signing_key
+        self._durability = durability
+        # Size of the file as of OUR last append; a mismatch means someone else wrote.
+        self._last_size = -1
+        self._seal_every = seal_every if (seal_every or 0) > 0 else None
+        self._since_seal = 0
+        self._sealing = False  # re-entry guard: seal() appends, which must not re-trigger
+        self.run_id = run_id or uuid.uuid4().hex[:16]
         self._fh = None
         # The hash chain is a single serial thread: prev/head must advance atomically with the
         # write. Callers today append sequentially (one Coordinator at a time, subagents run to
@@ -222,12 +282,28 @@ class AuditLog:
         """
         if self._redactor is not None:
             data = self._redactor(data)
+        # Stamp the run so records from concurrent agents sharing one log stay attributable.
+        # Added after redaction so a redactor cannot strip it, and before hashing so it is
+        # covered by the chain.
+        if kind != HEADER_KIND and isinstance(data, dict) and "run_id" not in data:
+            data = {**data, "run_id": self.run_id}
         with self._lock:
             _lock_file(self._lockfh)
             try:
-                disk_head = _tail_hash(self.path)
-                if disk_head is not None and disk_head != self._head:
-                    self._head = disk_head  # another writer advanced the chain; follow it
+                # Re-sync the head only if the file actually grew since OUR last write.
+                # Re-reading and parsing the 64 KB tail on every append is what capped
+                # throughput at ~50 entries/sec — and in the overwhelmingly common
+                # single-writer case it re-derives a head we already hold. A size that
+                # matches what we wrote proves no one else appended; anything else (another
+                # Agent, another process) falls back to the full tail read.
+                try:
+                    size = self.path.stat().st_size
+                except OSError:
+                    size = -1
+                if size != self._last_size:
+                    disk_head = _tail_hash(self.path)
+                    if disk_head is not None and disk_head != self._head:
+                        self._head = disk_head  # another writer advanced it; follow along
                 entry_id = uuid.uuid4().hex
                 ts = time.time()
                 core = I.entry_core(entry_id, ts, kind, data)
@@ -237,13 +313,49 @@ class AuditLog:
                 )
                 self._fh.seek(0, os.SEEK_END)
                 self._fh.write(json.dumps(asdict(entry), ensure_ascii=False) + "\n")
-                self._fh.flush()
-                os.fsync(self._fh.fileno())
+                if self._durability != "os":
+                    self._fh.flush()
+                if self._durability == "fsync":
+                    os.fsync(self._fh.fileno())
+                try:
+                    # Remember our own size so the next append can tell "nobody else wrote"
+                    # from "someone did" with a stat instead of a 64 KB read-and-parse.
+                    self._last_size = self.path.stat().st_size
+                except OSError:
+                    self._last_size = -1
             finally:
                 _unlock_file(self._lockfh)
             self._head = h
             self._count += 1
-            return entry_id
+            self._since_seal += 1
+        self._maybe_seal()
+        return entry_id
+
+    def _maybe_seal(self) -> None:
+        """Write a periodic checkpoint. Bounds how many trailing entries an external
+        verifier cannot vouch for (`VerifyReport.unsealed_tail`)."""
+        if self._seal_every is None or self._sealing:
+            return
+        if self._since_seal < self._seal_every:
+            return
+        self._sealing = True
+        try:
+            self.seal()
+        except Exception:
+            pass  # a checkpoint failure must never lose the entry that triggered it
+        finally:
+            self._sealing = False
+            self._since_seal = 0
+
+    def anchor(self) -> dict:
+        """The out-of-band anchor for this chain: `{chain_id, head, count}`.
+
+        Store this somewhere the agent cannot reach (a SIEM, a second host, a signed
+        receipt) and pass `head`/`count` back to `verify_audit_file` later. This is the
+        ONLY thing that makes tail truncation detectable — an in-file seal is part of the
+        tail and disappears with it.
+        """
+        return {"chain_id": self.chain_id, "head": self._head, "count": self._count}
 
     # ---- public logging API (unchanged signatures) -------------------------
     def log_exchange(self, method: str, url: str, request: dict, response: dict) -> str:
@@ -267,12 +379,38 @@ class AuditLog:
             },
         )
 
-    def log_decision(self, tool: str, behavior: str, reason: str) -> str:
-        return self._append("decision", {"tool": tool, "behavior": behavior, "reason": reason})
+    def log_decision(
+        self,
+        tool: str,
+        behavior: str,
+        reason: str,
+        *,
+        tool_input: Any = None,
+        tool_use_id: str | None = None,
+    ) -> str:
+        """Record one permission decision.
 
-    def log_blocked(self, tool: str, target: str, reason: str) -> str:
+        `tool_input` is the arguments the call was made with. Without them the log proved
+        only that "ReadFile was allowed" — not WHICH file, so you could establish the record
+        was unaltered and still not reconstruct what the agent did, which is the entire
+        point of keeping one. Arguments go through the same redactor as everything else, and
+        are summarised so one oversized argument cannot bloat the chain.
+        """
+        data: dict = {"tool": tool, "behavior": behavior, "reason": reason}
+        if tool_use_id:
+            data["tool_use_id"] = tool_use_id
+        if tool_input is not None:
+            data["input"] = _summarize_args(tool_input)
+        return self._append("decision", data)
+
+    def log_blocked(
+        self, tool: str, target: str, reason: str, *, tool_input: Any = None
+    ) -> str:
         """A policy block: feeds alerting/metrics on denied tool calls."""
-        return self._append("blocked", {"tool": tool, "target": target, "reason": reason})
+        data: dict = {"tool": tool, "target": target, "reason": reason}
+        if tool_input is not None:
+            data["input"] = _summarize_args(tool_input)
+        return self._append("blocked", data)
 
     def note(self, text: str) -> str:
         return self._append("note", {"text": text})
@@ -280,15 +418,14 @@ class AuditLog:
     # ---- sealing (layer 3) -------------------------------------------------
     def seal(self, signing_key: str | bytes | None = None) -> str:
         """Write a checkpoint over the current head+count. If an Ed25519 signing key is
-        available (arg, constructor, or $BARK_SQK_AUDIT_SIGNING_KEY / $BBENGINE_AUDIT_SIGNING_KEY)
-        the checkpoint is signed so a third party can verify chain-of-custody against the operator's public
+        available (arg, constructor, or one of `SIGNING_KEY_ENV_VARS`) the checkpoint is
+        signed so a third party can verify chain-of-custody against the operator's public
         key. Without a key it is still a chained, timestamped checkpoint. Returns its id."""
-        raw = (
-            signing_key
-            or self._signing_raw
-            or os.environ.get("BARK_SQK_AUDIT_SIGNING_KEY")
-            or os.environ.get("BBENGINE_AUDIT_SIGNING_KEY")
-        )
+        raw = signing_key or self._signing_raw
+        for var in SIGNING_KEY_ENV_VARS:
+            if raw:
+                break
+            raw = os.environ.get(var)
         head, count = self._head, self._count
         data: dict = {"head": head, "count": count}
         priv = I.load_private_key(raw) if raw else None
@@ -386,13 +523,29 @@ def _iter_lines(path: Path) -> Iterator[tuple[int, str]]:
 
 
 def verify_audit_file(
-    path: str | Path, *, hmac_key: str | bytes | None = None
+    path: str | Path,
+    *,
+    hmac_key: str | bytes | None = None,
+    expected_head: str | None = None,
+    expected_count: int | None = None,
 ) -> "I.VerifyReport":
-    """Verify a chained audit file end-to-end. Detects any edit/insert/delete/reorder,
-    tolerates a legacy (pre-chain) prefix and a truncated final line, and checks any
-    Ed25519 seals against their embedded public key.
+    """Verify a chained audit file end-to-end.
 
-    Returns a VerifyReport whose `.ok` is True only if every chained entry links.
+    Detects any edit, insert, delete or reorder WITHIN the chain, tolerates a legacy
+    (pre-chain) prefix and a truncated final line, and checks any Ed25519 seals against
+    their embedded public key.
+
+    Tail truncation is the one thing a hash chain cannot detect on its own — dropping the
+    last N entries leaves a chain that still links. Three things narrow it:
+      * a seal that attests a HIGHER count than the file now holds proves truncation;
+      * `expected_head` / `expected_count`, from an anchor held outside the file (a SIEM,
+        a prior VerifyReport), closes the gap entirely;
+      * otherwise `report.unsealed_tail` says how many entries sit past the last seal,
+        which is exactly how many could have been removed unnoticed.
+
+    Returns a VerifyReport whose `.ok` is True only if every chained entry links and every
+    supplied anchor matches. It never raises on malformed input — a wiped or corrupted log
+    comes back as `ok=False` with a reason.
     """
     path = Path(path)
     key = _coerce_key(hmac_key)
@@ -404,19 +557,36 @@ def verify_audit_file(
         return I.VerifyReport(ok=True, count=0, reason="empty")
 
     # Parse; remember if the FINAL line is unparseable (crash truncation, tolerated).
+    #
+    # A line must be a JSON *object* to be an entry. A line that is valid JSON but a list,
+    # string or number (which is exactly what an agent overwriting the log with "[]" leaves
+    # behind) used to reach `.get()` below and raise AttributeError out of the verifier —
+    # so a wiped log looked like a broken verifier, and any monitor calling verify() died
+    # with it. Tampering must always come back as a report, never as an exception.
     parsed: list[tuple[int, dict]] = []
     truncated_tail = False
     for idx, (lineno, s) in enumerate(raw):
+        is_last = idx == len(raw) - 1
         try:
-            parsed.append((lineno, json.loads(s)))
+            record = json.loads(s)
         except json.JSONDecodeError:
-            if idx == len(raw) - 1:
+            if is_last:
                 truncated_tail = True  # only the very last line may be a partial write
-            else:
-                return I.VerifyReport(
-                    ok=False, broken_at=lineno,
-                    reason=f"unparseable entry at line {lineno} (not the final line)",
-                )
+                continue
+            return I.VerifyReport(
+                ok=False, broken_at=lineno,
+                reason=f"unparseable entry at line {lineno} (not the final line)",
+            )
+        if not isinstance(record, dict):
+            if is_last:
+                truncated_tail = True
+                continue
+            return I.VerifyReport(
+                ok=False, broken_at=lineno,
+                reason=f"entry at line {lineno} is a JSON {type(record).__name__}, not an "
+                       "object (the file was overwritten, not appended to)",
+            )
+        parsed.append((lineno, record))
 
     # Locate the chain header. Everything before it is a legacy prefix we don't verify.
     header_pos = next(
@@ -424,9 +594,19 @@ def verify_audit_file(
         None,
     )
     if header_pos is None:
+        # No header at all. Distinguish "this predates chaining" from "someone replaced the
+        # file", because they call for completely different responses.
+        looks_overwritten = not parsed or not any(
+            isinstance(d.get("kind"), str) and d.get("hash") for _, d in parsed
+        )
         return I.VerifyReport(
             ok=False, count=len(parsed), truncated_tail=truncated_tail,
-            reason="no chain header (audit-open); log is legacy/unchained",
+            reason=(
+                "no chain header (audit-open) and no chained entries; the file was "
+                "replaced, not appended to"
+                if looks_overwritten else
+                "no chain header (audit-open); log is legacy/unchained"
+            ),
         )
 
     header = parsed[header_pos][1]
@@ -441,6 +621,7 @@ def verify_audit_file(
     count = 0
     seals = 0
     seals_verified = 0
+    sealed_through = 0
     for idx_entry, (_, d) in enumerate(parsed[header_pos:]):
         entry = AuditEntry(
             id=d.get("id", ""), ts=d.get("ts", 0.0), kind=d.get("kind", ""),
@@ -472,10 +653,53 @@ def verify_audit_file(
                     sd.get("head", ""), int(sd.get("count", 0)),
                 ):
                     seals_verified += 1
+            try:
+                sealed_through = max(sealed_through, int(sd.get("count", 0)))
+            except (TypeError, ValueError):
+                pass
         expected_prev = entry.hash
         count += 1
 
+    # --- tail-truncation checks ------------------------------------------------
+    # A hash chain links each entry to the one BEFORE it, so removing entries from the END
+    # leaves a chain that still verifies perfectly. That is inherent and unfixable from
+    # inside the file: an in-file seal is itself part of the tail, so whoever drops the last
+    # N entries drops the seal with them. Only an anchor held OUTSIDE the file closes it.
+    #
+    # A seal that survives is still worth checking: it pins the count at the moment it was
+    # written, so a file holding fewer entries than a surviving seal attests was tampered
+    # with in a way the chain walk could not see.
+    if sealed_through and count < sealed_through:
+        return I.VerifyReport(
+            ok=False, count=count, chain_id=chain_id, broken_at=count, keyed=keyed,
+            seals=seals, seals_verified=seals_verified, truncated_tail=truncated_tail,
+            sealed_through=sealed_through,
+            reason=f"file holds {count} entries but a surviving seal attests "
+                   f"{sealed_through} (entries were removed)",
+        )
+    # The anchor is the real defence. A caller that recorded (head, count) out of band —
+    # a SIEM, a second store, the previous VerifyReport — passes them here and truncation
+    # becomes provable. Without one, `unsealed_tail` reports how many entries sit past the
+    # last seal: exactly how many could have been dropped unnoticed.
+    if expected_count is not None and count != expected_count:
+        return I.VerifyReport(
+            ok=False, count=count, chain_id=chain_id, broken_at=count, keyed=keyed,
+            seals=seals, seals_verified=seals_verified, truncated_tail=truncated_tail,
+            sealed_through=sealed_through,
+            reason=f"expected {expected_count} entries, found {count} "
+                   f"({'truncated' if count < expected_count else 'extended'})",
+        )
+    if expected_head is not None and expected_prev != expected_head:
+        return I.VerifyReport(
+            ok=False, count=count, chain_id=chain_id, broken_at=count, keyed=keyed,
+            seals=seals, seals_verified=seals_verified, truncated_tail=truncated_tail,
+            sealed_through=sealed_through,
+            reason=f"head is {expected_prev[:12]}… but the anchor expects "
+                   f"{expected_head[:12]}… (the tail was rewritten or removed)",
+        )
+
     return I.VerifyReport(
-        ok=True, count=count, chain_id=chain_id, keyed=keyed,
+        ok=True, count=count, chain_id=chain_id, keyed=keyed, head=expected_prev,
         seals=seals, seals_verified=seals_verified, truncated_tail=truncated_tail,
+        sealed_through=sealed_through, unsealed_tail=max(0, count - sealed_through),
     )
