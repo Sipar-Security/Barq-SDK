@@ -30,14 +30,57 @@ _CRED_DIR_RE = re.compile(
 )
 
 
+# Absolute paths that hold secrets but whose BASENAME is unremarkable, so the filename
+# denylist above never saw them. `cat /etc/shadow` prints every password hash on the host
+# and was auto-allowed with no prompt, because "shadow" is not a secret-looking filename.
+_SENSITIVE_ABS_RE = re.compile(
+    r"(?:^|[\s'\"=])(?:"
+    r"/etc/(?:shadow|gshadow|sudoers|master\.passwd|security/|ssh/|krb5\.keytab)"
+    r"|/proc/(?:self|\d+|\*)/environ"
+    r"|/root(?:/|\b)"
+    r"|/var/lib/(?:kubelet|rancher)/"
+    r"|[A-Za-z]:[\\/]windows[\\/]system32[\\/]config[\\/](?:sam|system|security)"
+    r")",
+    re.IGNORECASE,
+)
+
+# The PowerShell environment drive. `Get-ChildItem Env:` is the cmdlet spelling of `env`.
+_ENV_DRIVE_RE = re.compile(r"(?:^|[\s'\"])env:", re.IGNORECASE)
+
+
 def _references_sensitive_path(command: str) -> bool:
-    if _CRED_DIR_RE.search(command.lower()):
+    lowered = command.lower()
+    if _CRED_DIR_RE.search(lowered):
+        return True
+    if _SENSITIVE_ABS_RE.search(command):
+        return True
+    if _ENV_DRIVE_RE.search(command):
         return True
     for tok in command.split():
         base = tok.strip("'\"").rsplit("/", 1)[-1].rsplit("\\", 1)[-1].lower()
         if base in _SENSITIVE_NAMES or base.endswith(SENSITIVE_READ_SUFFIXES):
             return True
     return False
+
+
+# Commands that do not mutate anything and are therefore "read-only" in the narrow sense,
+# but whose OUTPUT is a secret. Auto-allowing them equates "does not write" with "safe to
+# run unattended", which is exactly backwards for an exfiltration threat model — and this
+# module's own threat model, per SECURITY.md, is a prompt-injected model.
+#
+#   env / printenv  -> every API key in the process environment, including the model
+#                      provider key this SDK itself loaded from .env
+#   ps / top        -> other processes' command lines, which routinely carry credentials
+#                      (`mysql -pSECRET`, `curl -H "Authorization: ..."`)
+#   set / export    -> the shell's own variables
+#   history         -> previously typed commands, secrets included
+#
+# Refusing them costs one approval prompt. Allowing them costs the credential.
+_SECRET_DISCLOSING_BINS = frozenset({
+    "env", "printenv", "set", "export", "declare", "typeset", "history",
+    "ps", "top", "htop", "pgrep", "lsof", "get-process", "gps", "get-variable",
+    "systemctl-show", "journalctl", "dmesg", "last", "lastlog", "w",
+})
 
 # Patterns that make a command NOT provably read-only: command substitution, chaining,
 # redirection, in-place edit, PowerShell method/expression calls, stop-parsing, UNC paths,
@@ -56,16 +99,16 @@ _DANGEROUS = (
 # Commands that only observe state. First token (basename) must be in here.
 _READONLY_BINS = frozenset({
     # POSIX
-    "ls", "pwd", "whoami", "id", "hostname", "uname", "date", "uptime", "env",
-    "printenv", "echo", "cat", "head", "tail", "wc", "which", "type", "file",
-    "stat", "du", "df", "ps", "free", "tree", "basename", "dirname", "realpath",
+    "ls", "pwd", "whoami", "id", "hostname", "uname", "date", "uptime",
+    "echo", "cat", "head", "tail", "wc", "which", "type", "file",
+    "stat", "du", "df", "free", "tree", "basename", "dirname", "realpath",
     "readlink", "grep", "egrep", "fgrep", "rg", "find", "locate", "sort", "uniq",
     "cut", "md5sum", "sha1sum", "sha256sum", "cksum", "true", "test",
     # PowerShell read-only cmdlets / aliases
     "get-childitem", "gci", "dir", "get-content", "gc", "get-item", "get-itemproperty",
     "test-path", "select-string", "sls", "measure-object", "get-location", "gl",
     "resolve-path", "split-path", "join-path", "get-command", "gcm", "get-help",
-    "get-member", "gm", "get-process", "get-service", "compare-object", "sort-object",
+    "get-member", "gm", "get-service", "compare-object", "sort-object",
     "select-object", "format-list", "format-table", "out-string", "write-output",
     "write-host", "get-date", "get-host", "convertto-json", "convertfrom-json",
 })
@@ -102,14 +145,19 @@ _DOCKER_MUTATING = frozenset({
 
 
 def _git_config_read_only(args: list[str]) -> bool:
-    """`git config` is read-only ONLY if it is a pure getter/list with no value to set. The
-    bypass `git config user.name Hacker --list` sets first (key + value = 2 bare tokens) then
-    reads: so we require a read flag AND at most one bare (non-flag) token (the key)."""
-    read_flags = {"--get", "--get-all", "--get-regexp", "--get-urlmatch", "--list", "-l"}
-    if not any(a in read_flags for a in args):
-        return False
-    non_flag = [a for a in args if not a.startswith("-")]
-    return len(non_flag) <= 1  # a getter names at most the key; a setter adds a value
+    """`git config` is never auto-allowed.
+
+    It used to auto-allow a pure getter, `--list` included. But `git config --list` prints
+    `credential.helper`, and remote URLs configured with an embedded token
+    (`https://x-access-token:ghp_…@github.com/…`) come back in the same output — so a
+    "read-only" call handed over a live credential with no prompt. `--get <key>` discloses
+    the same thing one key at a time.
+
+    Kept as a function rather than deleted so the reason travels with the code: this is a
+    deliberate refusal, not an oversight. The cost is one approval prompt on an uncommon
+    command; the alternative cost is the credential.
+    """
+    return False
 
 
 def _tokens(command: str) -> list[str]:
@@ -133,6 +181,9 @@ def _segment_read_only(seg: str) -> bool:
         return False
     base = _basename(toks[0])
     args = [t.lower() for t in toks[1:]]
+    # Read-only, but the output IS the secret. Never auto-allowed.
+    if base in _SECRET_DISCLOSING_BINS:
+        return False
     if base == "git" and len(toks) >= 2:
         sub = toks[1].lower()
         if sub not in _GIT_RO:
