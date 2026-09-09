@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Optional
 
 from engine.audit import AuditLog
-from engine.coordinator import Coordinator
+from engine.coordinator import Coordinator, last_assistant_text
 from engine.permissions import PermissionEngine
 
 # Tool names that spawn subagents. A subagent must never be handed one of these; that is
@@ -150,23 +150,7 @@ class Subagent:
         )
 
 
-def _last_assistant_text(messages: list[dict]) -> str:
-    """The text of the LAST assistant turn that actually produced text. Scanning backwards
-    (not just messages[-1]) matters when the run ends on a tool_result turn (e.g. a subagent
-    truncated at max_turns), so we surface the model's most recent words instead of "" ."""
-    for m in reversed(messages):
-        if m.get("role") != "assistant":
-            continue
-        content = m.get("content")
-        if isinstance(content, list):
-            text = "\n".join(
-                b.get("text", "") for b in content if b.get("type") == "text"
-            ).strip()
-            if text:
-                return text
-        elif isinstance(content, str) and content.strip():
-            return content.strip()
-    return ""
+_last_assistant_text = last_assistant_text
 
 
 # Factory: (subagent_type) -> a fresh Subagent. Fresh per spawn so context never carries.
