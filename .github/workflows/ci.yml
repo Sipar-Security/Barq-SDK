@@ -1,0 +1,25 @@
+name: CI
+
+on:
+  push: { branches: [main] }
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ["3.12", "3.13"]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: pip install -e ".[dev,crypto]"
+      # The suite is fully offline: no API key, no network. If it needs either, that is
+      # the bug — a test that silently skips is worse than one that fails.
+      - run: python -m pytest -q
+      - name: package imports under its published name
+        run: python -c "import barq_sdk; print(barq_sdk.__version__)"
