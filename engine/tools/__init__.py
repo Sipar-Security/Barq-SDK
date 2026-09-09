@@ -1,3 +1,4 @@
+from .decorator import as_tool, is_tool, tool, tool_spec_from
 from .http import http_request, make_http_request, HTTP_REQUEST_SPEC
 from .files import (
     EDIT_FILE_SPEC,
@@ -12,13 +13,19 @@ from .files import (
     make_write_file,
 )
 from .memory import (
+    FORGET_MEMORY_SPEC,
     RECALL_MEMORY_SPEC,
     SAVE_MEMORY_SPEC,
+    make_forget_memory,
     make_recall_memory,
     make_save_memory,
 )
 
 __all__ = [
+    "tool",
+    "as_tool",
+    "is_tool",
+    "tool_spec_from",
     "http_request",
     "make_http_request",
     "HTTP_REQUEST_SPEC",
@@ -32,8 +39,10 @@ __all__ = [
     "make_edit_file",
     "make_list_dir",
     "make_find_files",
+    "FORGET_MEMORY_SPEC",
     "RECALL_MEMORY_SPEC",
     "SAVE_MEMORY_SPEC",
+    "make_forget_memory",
     "make_recall_memory",
     "make_save_memory",
 ]
