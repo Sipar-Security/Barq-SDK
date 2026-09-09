@@ -1,24 +1,40 @@
 [project]
-name = "Barq-SDK"
+name = "barq-sdk"
 version = "0.1.0"
 description = "A small, embeddable SDK for building tool-using AI agents in Python"
 requires-python = ">=3.12"
+license = "MIT"
+readme = "README.md"
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Typing :: Typed",
+]
 dependencies = [
     # MCP client (stdio tool servers). Optional at runtime: only imported when you
     # actually connect an MCP server.
-    "mcp>=1.23",
+    "mcp>=1.23,<2",
     # OpenAI-compatible model calls go over httpx; no vendor SDK on purpose.
-    "httpx>=0.28",
+    "httpx>=0.28,<1",
 ]
 
 [project.optional-dependencies]
 # Ed25519 seals for the audit log (HMAC + SHA-256 chaining work without it).
-crypto = ["cryptography>=43"]
-dev = ["pytest>=8"]
+crypto = ["cryptography>=43,<50"]
+# Spans and metrics via engine.telemetry.OTelTelemetry. Absent, telemetry is a no-op.
+otel = ["opentelemetry-api>=1.20", "opentelemetry-sdk>=1.20"]
+dev = ["pytest>=8,<9", "pytest-asyncio>=0.23", "opentelemetry-sdk>=1.20"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
 
 [tool.setuptools.packages.find]
-include = ["bark_sqk*", "engine*"]
+include = ["barq_sdk*", "engine*"]
+
+# py.typed ships the inline annotations. Without it every downstream mypy/pyright user
+# sees `Any` for the whole package despite the codebase being fully annotated.
+[tool.setuptools.package-data]
+"*" = ["py.typed"]
